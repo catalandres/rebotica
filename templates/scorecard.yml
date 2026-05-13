@@ -1,0 +1,11 @@
+run_id: 2026-05-13-001
+project: example-project
+model: example-model
+mode: propose_tests
+accepted: false
+needed_human_correction: null
+tests_passed: null
+diff_lines: null
+files_changed: null
+problems: []
+improvements: []

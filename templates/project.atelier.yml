@@ -1,0 +1,44 @@
+project:
+  name: example-project
+  type: unknown
+
+commands:
+  test: ""
+  check: ""
+  format_check: ""
+
+forbidden_paths:
+  - .env
+  - secrets/
+
+sensitive_paths:
+  - docs/adr/
+
+default_limits:
+  max_changed_lines: 300
+  max_files_changed: 5
+
+providers:
+  default: lmstudio
+  lmstudio:
+    kind: openai-compatible
+    base_url: http://127.0.0.1:1234/v1
+  openai:
+    kind: openai-compatible
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+
+models:
+  default: ""
+  review: ""
+  explain: ""
+  tests: ""
+  patch: ""
+  aliases:
+    qwen-local: ""
+
+policy:
+  allow_dependency_changes: false
+  allow_generated_files: false
+  patch_requires_review: true
+  patch_requires_worktree: true

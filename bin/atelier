@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ATELIER_HOME=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+export ATELIER_HOME
+
+BINARY="$ATELIER_HOME/target/debug/atelier"
+
+if [ ! -x "$BINARY" ]; then
+  cargo build --manifest-path "$ATELIER_HOME/Cargo.toml" -p atelier-cli >/dev/null
+fi
+
+exec "$BINARY" "$@"

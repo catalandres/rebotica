@@ -1,0 +1,14 @@
+task_id: local-001
+mode: review
+goal: ""
+project_context: ""
+allowed_files: []
+forbidden_files: []
+sensitive_files: []
+commands_to_run: []
+max_changed_lines: 300
+max_files_changed: 5
+output_format: json
+acceptance_criteria:
+  - Root coordinator reviews output before acceptance.
+risk_level: low
