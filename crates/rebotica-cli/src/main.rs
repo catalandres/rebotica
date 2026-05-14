@@ -15,6 +15,16 @@ use std::process::Command as ProcessCommand;
 #[derive(Debug, Parser)]
 #[command(name = "rbtc", version)]
 #[command(about = "A governed local-worker harness for collaborative software craftsmanship.")]
+#[command(after_help = "Common workflows:
+  rbtc init
+  rbtc doctor
+  rbtc models --configured-only
+  rbtc review
+  rbtc patch .rebotica/tasks/task.yml --dry-run
+
+Provider setup:
+  export REBOTICA_BASE_URL=http://127.0.0.1:1234/v1
+  export REBOTICA_MODEL=MODEL_ID")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -22,26 +32,45 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(about = "Check config, provider routing, git state, and installed adapters.")]
     Doctor(DoctorArgs),
+    #[command(about = "Show configured model routes and, unless skipped, provider models.")]
     Models(ModelsArgs),
+    #[command(about = "Show configured providers, endpoints, and auth environment state.")]
     Providers(ProvidersArgs),
+    #[command(about = "Check the selected provider's /models endpoint.")]
     Health(ProviderArgs),
+    #[command(about = "Send a tiny chat request to verify a selected model can respond.")]
     Smoke(SmokeArgs),
+    #[command(about = "Create .rebotica.yml and local .rebotica/ project state.")]
     Init(InitArgs),
+    #[command(about = "Install Claude, Codex, or GitHub adapter assets into this repo.")]
     Install(InstallArgs),
+    #[command(about = "Ask a bounded worker to review the current git diff.")]
     Review(ReviewArgs),
+    #[command(about = "Ask a bounded worker to explain selected files.")]
     Explain(FileWorkerArgs),
+    #[command(about = "Ask a bounded worker to propose focused tests for selected files.")]
     Tests(FileWorkerArgs),
+    #[command(about = "Ask a bounded worker for a dry-run unified diff from a task envelope.")]
     Patch(PatchArgs),
+    #[command(about = "Check the current diff against forbidden paths and size limits.")]
     GuardDiff(GuardDiffArgs),
+    #[command(about = "Create a retrospective template for a saved run.")]
     Retro(RetroArgs),
 }
 
 #[derive(Debug, Parser, Clone, Default)]
 struct ProviderArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Provider name from config, or an OpenAI-compatible base URL."
+    )]
     provider: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Override provider base URL, for example http://127.0.0.1:1234/v1."
+    )]
     base_url: Option<String>,
 }
 
@@ -49,15 +78,22 @@ struct ProviderArgs {
 struct SmokeArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long)]
+    #[arg(long, help = "Model alias or raw provider model id to smoke test.")]
     model: Option<String>,
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        help = "Sampling temperature for the chat request."
+    )]
     temperature: f64,
 }
 
 #[derive(Debug, Parser)]
 struct InitArgs {
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Overwrite an existing .rebotica.yml and state .gitignore."
+    )]
     force: bool,
 }
 
@@ -65,7 +101,7 @@ struct InitArgs {
 struct DoctorArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long)]
+    #[arg(long, help = "Emit machine-readable JSON checks.")]
     json: bool,
 }
 
@@ -73,26 +109,37 @@ struct DoctorArgs {
 struct ModelsArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Skip the provider /models request and show configured routes only."
+    )]
     configured_only: bool,
-    #[arg(long)]
+    #[arg(long, help = "Emit machine-readable JSON output.")]
     json: bool,
 }
 
 #[derive(Debug, Parser)]
 struct ProvidersArgs {
-    #[arg(long)]
+    #[arg(long, help = "Emit machine-readable JSON output.")]
     json: bool,
 }
 
 #[derive(Debug, Parser)]
 struct InstallArgs {
+    #[arg(
+        value_name = "TARGET",
+        help = "Adapter target to install: claude, codex, github, or all."
+    )]
     target: InstallTarget,
-    #[arg(long)]
+    #[arg(long, help = "Copy assets instead of symlinking them.")]
     copy: bool,
-    #[arg(long)]
+    #[arg(long, help = "Replace existing target files during installation.")]
     force: bool,
-    #[arg(long)]
+    #[arg(
+        long,
+        value_name = "DIR",
+        help = "Install Codex skills into a custom directory."
+    )]
     target_dir: Option<String>,
 }
 
@@ -108,13 +155,21 @@ enum InstallTarget {
 struct ReviewArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long)]
+    #[arg(long, help = "Model alias or raw provider model id for review.")]
     model: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional review goal to put in the task envelope.")]
     goal: Option<String>,
-    #[arg(long, default_value = "medium")]
+    #[arg(
+        long,
+        default_value = "medium",
+        help = "Risk level to record in the task envelope."
+    )]
     risk: String,
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        help = "Sampling temperature for the chat request."
+    )]
     temperature: f64,
 }
 
@@ -122,12 +177,20 @@ struct ReviewArgs {
 struct FileWorkerArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long)]
+    #[arg(long, help = "Model alias or raw provider model id for this worker.")]
     model: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Optional goal to put in the task envelope.")]
     goal: Option<String>,
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        help = "Sampling temperature for the chat request."
+    )]
     temperature: f64,
+    #[arg(
+        value_name = "FILE",
+        help = "Project file to include in the worker context."
+    )]
     files: Vec<String>,
 }
 
@@ -135,29 +198,44 @@ struct FileWorkerArgs {
 struct PatchArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Model alias or raw provider model id for patch drafting."
+    )]
     model: Option<String>,
-    #[arg(long, default_value_t = 0.0)]
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        help = "Sampling temperature for the chat request."
+    )]
     temperature: f64,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Print the proposed diff and run metadata without applying anything."
+    )]
     dry_run: bool,
-    #[arg(long)]
+    #[arg(long, help = "Request direct application; currently rejected in v0.1.")]
     apply: bool,
+    #[arg(
+        value_name = "TASK_ENVELOPE",
+        help = "Path to a task-envelope YAML file."
+    )]
     envelope: String,
 }
 
 #[derive(Debug, Parser)]
 struct GuardDiffArgs {
-    #[arg(long)]
+    #[arg(long, help = "Override the configured maximum changed file count.")]
     max_files: Option<usize>,
-    #[arg(long)]
+    #[arg(long, help = "Override the configured maximum changed line count.")]
     max_lines: Option<usize>,
 }
 
 #[derive(Debug, Parser)]
 struct RetroArgs {
-    #[arg(long)]
+    #[arg(long, help = "Overwrite an existing retrospective file.")]
     force: bool,
+    #[arg(value_name = "RUN_ID", help = "Run id under ~/.rebotica/runs.")]
     run_id: String,
 }
 

@@ -69,6 +69,36 @@ fn version_flag_reports_package_version() {
 }
 
 #[test]
+fn top_level_help_guides_common_workflows() {
+    let output = rbtc().arg("help").output().expect("rbtc help should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("doctor"));
+    assert!(stdout.contains("Check config, provider routing, git state, and installed adapters."));
+    assert!(stdout.contains("models"));
+    assert!(stdout.contains("Show configured model routes"));
+    assert!(stdout.contains("Common workflows:"));
+    assert!(stdout.contains("rbtc patch .rebotica/tasks/task.yml --dry-run"));
+    assert!(stdout.contains("Provider setup:"));
+}
+
+#[test]
+fn subcommand_help_explains_patch_inputs_and_safety() {
+    let output = rbtc()
+        .args(["help", "patch"])
+        .output()
+        .expect("rbtc help patch should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Ask a bounded worker for a dry-run unified diff"));
+    assert!(stdout.contains("TASK_ENVELOPE"));
+    assert!(stdout.contains("Print the proposed diff and run metadata without applying anything."));
+    assert!(stdout.contains("currently rejected in v0.1"));
+}
+
+#[test]
 fn init_creates_project_config_and_refuses_accidental_overwrite() {
     let temp = TempDir::new("init");
 
