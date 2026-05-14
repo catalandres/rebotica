@@ -104,6 +104,24 @@ rbtc smoke --model worker
 REBOTICA_MODEL=worker rbtc review
 ```
 
+## Route Setup
+
+`rbtc init` creates the config and leaves model routes empty so onboarding works offline and never mutates provider settings unexpectedly. Configure routes through an explicit follow-up command:
+
+```sh
+rbtc models configure --model ACTUAL_MODEL_ID --alias local-worker
+```
+
+That writes `models.aliases.local-worker` and fills only empty `default`, `review`, `explain`, `tests`, and `patch` routes. Existing routes are left alone unless you pass `--force`.
+
+When LM Studio or another OpenAI-compatible provider is reachable, you can opt into detection:
+
+```sh
+rbtc models configure --detect
+```
+
+Detection writes routes only when the provider returns exactly one model. If the provider is unavailable, returns no models, or returns multiple candidates, Rebotica prints the next command to run and leaves `.rebotica.yml` unchanged.
+
 ## Design Boundary
 
 Rebotica should not become a provider SDK. The first contract is:

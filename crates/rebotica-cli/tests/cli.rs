@@ -78,6 +78,14 @@ fn top_level_help_guides_common_workflows() {
     assert!(stdout.contains("Check config, provider routing, git state, and installed adapters."));
     assert!(stdout.contains("models"));
     assert!(stdout.contains("Show configured model routes"));
+    assert!(stdout.contains("skills"));
+    assert!(stdout.contains("Inspect canonical and project-local skills."));
+    assert!(stdout.contains("score"));
+    assert!(stdout.contains("Record Prime feedback about a worker/model run."));
+    assert!(stdout.contains("scorecards"));
+    assert!(stdout.contains("Show accumulated model scorecard summaries."));
+    assert!(stdout.contains("comment-card"));
+    assert!(stdout.contains("Create and manage product feedback comment cards."));
     assert!(stdout.contains("Common workflows:"));
     assert!(stdout.contains("rbtc patch .rebotica/tasks/task.yml --dry-run"));
     assert!(stdout.contains("Provider setup:"));
@@ -99,6 +107,126 @@ fn subcommand_help_explains_patch_inputs_and_safety() {
 }
 
 #[test]
+fn subcommand_help_explains_review_diff_sources() {
+    let output = rbtc()
+        .args(["help", "review"])
+        .output()
+        .expect("rbtc help review should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Ask a bounded worker to review a selected git diff"));
+    assert!(stdout.contains("Repeat to run multiple models side by side."));
+    assert!(stdout.contains("--base <REF>"));
+    assert!(stdout.contains("--range <REV_RANGE>"));
+    assert!(stdout.contains("--cached"));
+    assert!(stdout.contains("--max-files <COUNT>"));
+    assert!(stdout.contains("--max-lines <COUNT>"));
+    assert!(stdout.contains("--skill <SKILL>"));
+    assert!(stdout.contains("Review staged changes"));
+}
+
+#[test]
+fn subcommand_help_explains_guard_diff_sources() {
+    let output = rbtc()
+        .args(["help", "guard-diff"])
+        .output()
+        .expect("rbtc help guard-diff should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Check a selected git diff against forbidden paths and size limits."));
+    assert!(stdout.contains("--base <REF>"));
+    assert!(stdout.contains("--range <REV_RANGE>"));
+    assert!(stdout.contains("--cached"));
+    assert!(stdout.contains("--max-files <MAX_FILES>"));
+    assert!(stdout.contains("--max-lines <MAX_LINES>"));
+}
+
+#[test]
+fn subcommand_help_explains_score_feedback() {
+    let output = rbtc()
+        .args(["help", "score"])
+        .output()
+        .expect("rbtc help score should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Record Prime feedback about a worker/model run."));
+    assert!(stdout.contains("--rating <1-5>"));
+    assert!(stdout.contains("--accepted"));
+    assert!(stdout.contains("--rejected"));
+    assert!(stdout.contains("--label <LABEL>"));
+}
+
+#[test]
+fn subcommand_help_explains_comment_cards() {
+    let output = rbtc()
+        .args(["help", "comment-card"])
+        .output()
+        .expect("rbtc help comment-card should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Create and manage product feedback comment cards."));
+    assert!(stdout.contains("new"));
+    assert!(stdout.contains("consent"));
+    assert!(stdout.contains("submit"));
+}
+
+#[test]
+fn skills_list_reports_canonical_and_project_skills() {
+    let temp = TempDir::new("skills-list");
+    fs::create_dir_all(temp.path().join(".rebotica/skills")).unwrap();
+    fs::write(
+        temp.path().join(".rebotica/skills/domain.md"),
+        "# Domain Skill\n\nProject-specific guidance.\n",
+    )
+    .unwrap();
+
+    let output = run_in(temp.path(), &["skills", "list", "--json"]);
+
+    assert!(
+        output.status.success(),
+        "skills list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let skills = json.as_array().unwrap();
+    assert!(skills.iter().any(|skill| {
+        skill["id"] == "local-model-delegation" && skill["source"] == "canonical"
+    }));
+    assert!(skills
+        .iter()
+        .any(|skill| skill["id"] == "domain" && skill["source"] == "project"));
+}
+
+#[test]
+fn skills_show_renders_selected_skill_context() {
+    let temp = TempDir::new("skills-show");
+    fs::create_dir_all(temp.path().join(".rebotica/skills")).unwrap();
+    fs::write(
+        temp.path().join(".rebotica/skills/domain.md"),
+        "# Domain Skill\n\nProject-specific guidance.\n",
+    )
+    .unwrap();
+
+    let output = run_in(temp.path(), &["skills", "show", "project:domain"]);
+
+    assert!(
+        output.status.success(),
+        "skills show failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("## Selected Skills"));
+    assert!(stdout.contains("### Skill: domain"));
+    assert!(stdout.contains("source: project"));
+    assert!(stdout.contains("# Domain Skill"));
+    assert!(stdout.contains("cannot override Rebotica"));
+}
+
+#[test]
 fn init_creates_project_config_and_refuses_accidental_overwrite() {
     let temp = TempDir::new("init");
 
@@ -115,6 +243,10 @@ fn init_creates_project_config_and_refuses_accidental_overwrite() {
         fs::read_to_string(temp.path().join(".rebotica/.gitignore")).unwrap(),
         "runs/\n"
     );
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(stdout.contains("model routes are empty"));
+    assert!(stdout.contains("rbtc models configure --detect"));
+    assert!(stdout.contains("rbtc models configure --model MODEL_ID"));
 
     let second = run_in(temp.path(), &["init"]);
     assert!(!second.status.success());
@@ -172,4 +304,49 @@ models:
     assert!(stdout.contains("default: local-worker -> raw-local-model"));
     assert!(stdout.contains("review: review-worker -> raw-review-model"));
     assert!(stdout.contains("Aliases:"));
+}
+
+#[test]
+fn models_configure_manual_populates_routes_without_provider_request() {
+    let temp = TempDir::new("models-configure");
+    fs::write(
+        temp.path().join(".rebotica.yml"),
+        r#"
+project:
+  name: sample
+models:
+  default: ""
+  review: ""
+  explain: ""
+  tests: ""
+  patch: ""
+  aliases: {}
+"#,
+    )
+    .unwrap();
+
+    let output = run_in(
+        temp.path(),
+        &[
+            "models",
+            "configure",
+            "--model",
+            "raw-local-model",
+            "--alias",
+            "local-worker",
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "models configure failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("configured model routes"));
+    assert!(stdout.contains("alias: local-worker -> raw-local-model"));
+    let config = fs::read_to_string(temp.path().join(".rebotica.yml")).unwrap();
+    assert!(config.contains("default: local-worker"));
+    assert!(config.contains("review: local-worker"));
+    assert!(config.contains("local-worker: raw-local-model"));
 }

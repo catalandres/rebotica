@@ -1,0 +1,63 @@
+name: Rebotica Comment Card
+description: Product feedback about Rebotica from Prime, a human, or a worker run.
+title: "[Comment Card]: "
+labels:
+  - comment-card
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - ux
+        - bug
+        - docs
+        - prompt
+        - roadmap
+        - release
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      placeholder: review, init, skills, guard-diff, docs
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source
+      options:
+        - prime
+        - human
+        - worker
+    validations:
+      required: true
+  - type: input
+    id: run-id
+    attributes:
+      label: Run ID
+      description: Optional Rebotica run id from ~/.rebotica/runs.
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed Behavior
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should Rebotica have made easier or clearer?
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Workaround
+      description: What did Prime or the human have to do instead?
+  - type: textarea
+    id: suggested-fix
+    attributes:
+      label: Suggested Fix
+      description: Optional implementation or product direction.

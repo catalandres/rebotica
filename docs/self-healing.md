@@ -21,8 +21,10 @@ Each run may contain:
 ```text
 task-envelope.yml
 prompt.md
+skills.json
 model-response.md
 parsed-output.json
+feedback.yml
 applied.patch
 review.md
 test-output.log
@@ -50,6 +52,26 @@ Ask:
 - Did checks catch the issue?
 - Should project config change?
 - Should prompt or model routing change?
+
+## Scorecards
+
+Prime can score a model-backed run:
+
+```sh
+rbtc score RUN_ID --rating 4 --accepted --label useful-review
+```
+
+This writes run-local `feedback.yml`, appends to `~/.rebotica/model-events.jsonl`, and refreshes `~/.rebotica/model-scorecards.yml`.
+
+## Comment Cards
+
+Comment cards are product feedback about Rebotica, not model performance feedback:
+
+```sh
+rbtc comment-card new --from-run RUN_ID --kind ux --area review --source prime --title "..."
+```
+
+Cards remain local under `~/.rebotica/comment-cards/pending/` until Prime or a human grants submission consent and submits them.
 
 ## Model Scorecards
 

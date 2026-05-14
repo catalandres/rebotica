@@ -203,9 +203,7 @@ impl TaskEnvelope {
             max_changed_lines: loaded.config.default_limits.max_changed_lines,
             max_files_changed: loaded.config.default_limits.max_files_changed,
             output_format: output_format.into(),
-            acceptance_criteria: vec![
-                "Root coordinator reviews output before acceptance.".to_string()
-            ],
+            acceptance_criteria: vec!["Prime reviews output before acceptance.".to_string()],
             risk_level: risk_level.into(),
         }
     }
