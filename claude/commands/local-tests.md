@@ -14,4 +14,4 @@ Run:
 rbtc tests path/to/file
 ```
 
-The local worker should propose tests, not edit files. The root coordinator decides whether to implement them.
+The local worker should propose tests, not edit files. Prime decides whether to implement them.

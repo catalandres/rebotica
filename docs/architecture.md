@@ -3,12 +3,12 @@
 Rebotica has three layers:
 
 ```text
-root coordinator
+Prime
   -> task envelope and policy
   -> local worker interface
   -> OpenAI-compatible endpoint
   -> advisory output or proposed diff
-  -> root review and verification
+  -> Prime review and verification
 ```
 
 ## Rust Workspace
@@ -24,7 +24,7 @@ Important boundaries:
 - `rebotica-runlog`: private run storage and scorecard bootstrap.
 - `rebotica-cli`: user-facing command behavior.
 - `rebotica-mcp`: future narrow MCP server.
-- `skills/`: canonical skills that can be installed into root-agent adapters.
+- `skills/`: canonical skills that can be inspected, installed into Prime-agent adapters, or attached as worker context.
 
 ## Shell Bridge First
 

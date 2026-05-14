@@ -79,7 +79,7 @@ pub fn persist(
 
 pub fn retrospective_template(run_id: &str) -> String {
     format!(
-        "# Retrospective: {run_id}\n\n## What failed?\n\n## What surprised us?\n\n## Was context missing?\n\n## Was the task too broad?\n\n## Did the local model violate scope?\n\n## Did checks catch the issue?\n\n## Should project config change?\n\n## Should prompt or model routing change?\n"
+        "# Retrospective: {run_id}\n\n## What failed?\n\n## What surprised us?\n\n## Was context missing?\n\n## Was the task too broad?\n\n## Did the local model violate scope?\n\n## Did checks catch the issue?\n\n## Should project config change?\n\n## Should prompt, skills, or model routing change?\n\n## Should Prime score this run?\n\n## Should Prime create a comment card for Rebotica?\n"
     )
 }
 

@@ -23,7 +23,7 @@ Rebotica relies on layered safety rather than model obedience alone.
 
 ## Verification Controls
 
-The root coordinator runs configured project commands:
+Prime runs configured project commands:
 
 - tests
 - checks
@@ -45,4 +45,4 @@ Worker output must separate:
 
 ## Guardrails Today
 
-The current CLI enforces forbidden path checks and diff-size checks through `rbtc guard-diff`. Patch application is intentionally disabled in v0.1.
+The current CLI enforces forbidden path checks and diff-size checks through `rbtc guard-diff`. It can check the unstaged working tree, staged changes, a base ref, or an explicit git range. Patch application is intentionally disabled in v0.1.

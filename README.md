@@ -2,16 +2,16 @@
 
 Rebotica is a workshop for local agents: a reusable delegation harness for governed collaborative craftsmanship.
 
-It keeps a root coding agent, such as Claude Code, in charge while bounded workers exposed through OpenAI-compatible providers help with review, explanation, test proposals, documentation cleanup, and small patch drafts.
+It keeps Prime, the coordinating agent such as Claude Code, in charge while bounded workers exposed through OpenAI-compatible providers help with review, explanation, test proposals, documentation cleanup, and small patch drafts.
 
 The core idea is simple:
 
 ```text
-root coordinator
+Prime
   -> explicit task envelope
   -> narrow local worker contract
   -> advisory output or bounded diff
-  -> coordinator review, tests, and acceptance gates
+  -> Prime review, tests, and acceptance gates
 ```
 
 Rebotica is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating bounded work safely.
@@ -24,15 +24,19 @@ Implemented in this first version:
 
 - Provider health and smoke checks, with LM Studio as the default local provider.
 - `rbtc doctor` for config validation and environment diagnostics.
-- `rbtc models` and `rbtc providers` for routing visibility.
+- `rbtc models`, `rbtc models configure`, and `rbtc providers` for routing visibility and explicit route setup.
 - `rbtc init` project onboarding.
-- `rbtc install claude|codex|github|all` for root-agent and repository assets.
-- `rbtc review` for current git diffs.
+- `rbtc install claude|codex|github|all` for Prime-agent and repository assets.
+- `rbtc skills list|show` for inspecting canonical and project-local skills.
+- `rbtc review` for working-tree, staged, base-ref, or explicit-range git diffs.
+- `rbtc guard-diff` for forbidden-path and size-limit checks on selected git diffs.
+- `rbtc score` for Prime feedback on worker/model performance.
+- `rbtc comment-card` for local-first product feedback about Rebotica.
 - `rbtc explain <file...>` for file explanation.
 - `rbtc tests <file...>` for test proposals.
 - `rbtc patch <task-envelope.yml> --dry-run` guard flow.
 - Run logging under `~/.rebotica/runs`.
-- Prompt contracts, templates, Claude commands, and Claude skills.
+- Prompt contracts, templates, Prime-agent adapter assets, and Prime-selected skill context.
 - MCP server source scaffold with narrow tool boundaries.
 
 ## Requirements
@@ -73,8 +77,15 @@ From a target project:
 
 ```sh
 rbtc init
+rbtc models configure --detect
 rbtc install claude
-rbtc review
+rbtc skills list
+rbtc guard-diff --base main
+rbtc review --base main --skill local-model-delegation
+rbtc review --base main --model gemma-review --model qwen-code
+rbtc score RUN_ID --rating 4 --accepted --label useful-review
+rbtc scorecards
+rbtc comment-card new --from-run RUN_ID --kind ux --area review --source prime --title "review feedback"
 rbtc explain src/main.rs
 rbtc tests src/main.rs
 rbtc patch .rebotica/tasks/example.yml --dry-run
@@ -102,6 +113,8 @@ That creates:
 
 The project config describes commands, forbidden paths, sensitive paths, providers, model aliases, limits, and preferred model routes. See [templates/project.rebotica.yml](templates/project.rebotica.yml).
 
+`rbtc init` intentionally leaves model routes empty. Use `rbtc models configure --detect` when a provider such as LM Studio is running with exactly one loaded model, or use `rbtc models configure --model MODEL_ID` to configure the route manually while offline.
+
 ## Providers And Model Aliases
 
 Aliases are useful because local model ids can be long and because different projects may route work to different OpenAI-compatible providers.
@@ -128,6 +141,8 @@ models:
 The CLI accepts either aliases or raw values:
 
 ```sh
+rbtc models configure --detect
+rbtc models configure --model huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx --alias qwen-worker
 rbtc smoke --model qwen-worker
 rbtc health --provider lmstudio
 rbtc health --base-url http://127.0.0.1:1234/v1
@@ -137,7 +152,7 @@ rbtc health --base-url http://127.0.0.1:1234/v1
 
 Rebotica delegates bounded work, not ambiguity.
 
-The root coordinator owns judgment: decomposition, scope, worker selection, patch acceptance, test execution, and final responsibility. Local models are useful precisely when their work is constrained, logged, reversible, and reviewed.
+Prime owns judgment: decomposition, scope, worker selection, patch acceptance, test execution, and final responsibility. Local models are useful precisely when their work is constrained, logged, reversible, and reviewed.
 
 Read more in [docs/philosophy.md](docs/philosophy.md).
 
@@ -164,7 +179,7 @@ scripts/                     install and contributor helper scripts
 prompts/system/              role prompts
 prompts/contracts/           worker output contracts
 mcp/rebotica-server/          future narrow MCP bridge
-skills/                      canonical root-agent skills
+skills/                      canonical Prime-agent skills
 claude/commands/             reusable Claude Code slash commands
 codex/                       Codex adapter notes
 github/                      GitHub repository assets
@@ -174,7 +189,7 @@ docs/                        architecture and operating guidance
 
 ## Safety Defaults
 
-Rebotica defaults to advisory output. Patch mode starts as dry-run-first and must pass guard checks before a human or root coordinator chooses to apply anything.
+Rebotica defaults to advisory output. Patch mode starts as dry-run-first and must pass guard checks before a human or Prime chooses to apply anything.
 
 Local workers must not push, commit, merge, add dependencies, edit forbidden paths, or claim checks passed unless the harness actually ran them.
 

@@ -2,10 +2,11 @@
 
 ## Roles
 
-The root coordinator owns:
+Prime owns:
 
 - task decomposition
 - scope definition
+- skill selection
 - task envelope creation
 - worker selection
 - model invocation
@@ -40,7 +41,7 @@ The local worker may return:
 
 Start with low-risk work:
 
-- Review current diff.
+- Review a selected git diff.
 - Explain one module.
 - Propose missing tests for one small file.
 - Identify documentation drift.

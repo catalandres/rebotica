@@ -8,7 +8,10 @@ Current focus:
 
 - Rust CLI.
 - Provider health and smoke checks, with LM Studio as the default local provider.
-- Review current diff.
+- Review a selected git diff.
+- Guard a selected git diff.
+- Inspect and attach Prime-selected skills.
+- Score model runs and queue Rebotica comment cards.
 - Explain files.
 - Propose tests.
 - Dry-run patch proposal.
@@ -38,7 +41,7 @@ cd ../project-rebotica-worker-1
 rbtc patch .rebotica/tasks/task.yml --dry-run
 ```
 
-The root coordinator reviews the diff and runs checks.
+Prime reviews the diff and runs checks.
 
 ## Phase 4: MCP Bridge
 
@@ -68,8 +71,9 @@ Make coworker installation boring:
 
 ## Phase 7: Skills Broker
 
-Make canonical Rebotica skills installable across root-agent adapters:
+Make canonical Rebotica skills installable across Prime-agent adapters:
 
+- per-invocation skill selection first
 - file-based Claude/Codex adapters first
 - GitHub repository governance assets
 - MCP resources for skill discovery

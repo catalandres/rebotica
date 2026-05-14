@@ -29,13 +29,15 @@ providers:
     api_key_env: OPENAI_API_KEY
 
 models:
+  # Leave routes empty until the project opts in:
+  #   rbtc models configure --detect
+  #   rbtc models configure --model MODEL_ID
   default: ""
   review: ""
   explain: ""
   tests: ""
   patch: ""
-  aliases:
-    qwen-local: ""
+  aliases: {}
 
 policy:
   allow_dependency_changes: false

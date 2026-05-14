@@ -1,6 +1,6 @@
 # Local Worker Self-Healing
 
-Use this skill after Rebotica local-worker runs when the root coordinator wants to improve prompts, task envelopes, project config, model routing, or scoring rules based on observed outcomes.
+Use this skill after Rebotica local-worker runs when Prime wants to improve prompts, task envelopes, project config, model routing, or scoring rules based on observed outcomes.
 
 This skill improves the harness. It does not grant local workers broader authority.
 
@@ -50,4 +50,4 @@ You may propose updates to:
 
 ## Restricted Changes
 
-Do not automatically modify core scripts or guard logic without root review. Propose the change first, explain the evidence, then let the root coordinator decide.
+Do not automatically modify core scripts or guard logic without Prime review. Propose the change first, explain the evidence, then let Prime decide.

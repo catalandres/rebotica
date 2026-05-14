@@ -1,6 +1,6 @@
 # Philosophy
 
-Rebotica is built around governed collaborative craftsmanship: capable tools working under explicit boundaries, with a human or root agent preserving judgment.
+Rebotica is built around governed collaborative craftsmanship: capable tools working under explicit boundaries, with a human or Prime preserving judgment.
 
 The harness does not try to make local models autonomous. It makes them useful by narrowing their work.
 
@@ -17,11 +17,11 @@ Rebotica therefore treats every local invocation as a contract:
 - What risks must be surfaced?
 - What acceptance gates remain outside the worker?
 
-## Root Coordinator
+## Prime
 
-The root coordinator may be Claude Code, OpenCode, Hermes, or another future harness. The root owns decomposition, scope, review, test execution, and acceptance.
+Prime may be Claude Code, OpenCode, Hermes, or another future harness. Prime owns decomposition, scope, review, test execution, and acceptance.
 
-This keeps Rebotica project-agnostic. The durable interface is the task envelope and worker output contract, not any single root-agent product.
+This keeps Rebotica project-agnostic. The durable interface is the task envelope and worker output contract, not any single Prime-agent product.
 
 ## Why Rust
 

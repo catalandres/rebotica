@@ -2,6 +2,43 @@ use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use std::process::Command;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffSource {
+    WorkingTree,
+    Cached,
+    Base(String),
+    Range(String),
+}
+
+impl DiffSource {
+    pub fn description(&self) -> String {
+        match self {
+            Self::WorkingTree => "unstaged working tree changes (git diff)".to_string(),
+            Self::Cached => "staged changes (git diff --cached)".to_string(),
+            Self::Base(base) => {
+                format!("changes from merge-base({base}, HEAD) to HEAD (git diff {base}...HEAD)")
+            }
+            Self::Range(range) => format!("explicit git diff range (git diff {range})"),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::WorkingTree | Self::Cached => Ok(()),
+            Self::Base(base) => {
+                validate_revision_arg("base", base)?;
+                if base.contains("..") {
+                    return Err(anyhow!(
+                        "--base accepts a single ref; use --range for rev ranges"
+                    ));
+                }
+                Ok(())
+            }
+            Self::Range(range) => validate_revision_arg("range", range),
+        }
+    }
+}
+
 pub fn assert_repository() -> Result<()> {
     assert_repository_in(None)
 }
@@ -11,19 +48,35 @@ pub fn status_short() -> Result<String> {
 }
 
 pub fn diff() -> Result<String> {
-    diff_in(None)
+    diff_for(&DiffSource::WorkingTree)
 }
 
 pub fn diff_stat() -> Result<String> {
-    diff_stat_in(None)
+    diff_stat_for(&DiffSource::WorkingTree)
 }
 
 pub fn changed_files() -> Result<Vec<String>> {
-    changed_files_in(None)
+    changed_files_for(&DiffSource::WorkingTree)
 }
 
 pub fn changed_line_count() -> Result<usize> {
-    changed_line_count_in(None)
+    changed_line_count_for(&DiffSource::WorkingTree)
+}
+
+pub fn diff_for(source: &DiffSource) -> Result<String> {
+    diff_for_in(None, source)
+}
+
+pub fn diff_stat_for(source: &DiffSource) -> Result<String> {
+    diff_stat_for_in(None, source)
+}
+
+pub fn changed_files_for(source: &DiffSource) -> Result<Vec<String>> {
+    changed_files_for_in(None, source)
+}
+
+pub fn changed_line_count_for(source: &DiffSource) -> Result<usize> {
+    changed_line_count_for_in(None, source)
 }
 
 fn assert_repository_in(cwd: Option<&Path>) -> Result<()> {
@@ -34,16 +87,16 @@ fn status_short_in(cwd: Option<&Path>) -> Result<String> {
     output_in(cwd, ["status", "--short"])
 }
 
-fn diff_in(cwd: Option<&Path>) -> Result<String> {
-    output_in(cwd, ["diff", "--no-ext-diff"])
+fn diff_for_in(cwd: Option<&Path>, source: &DiffSource) -> Result<String> {
+    output_in(cwd, diff_args(source, DiffOutput::Patch)?)
 }
 
-fn diff_stat_in(cwd: Option<&Path>) -> Result<String> {
-    output_in(cwd, ["diff", "--stat"])
+fn diff_stat_for_in(cwd: Option<&Path>, source: &DiffSource) -> Result<String> {
+    output_in(cwd, diff_args(source, DiffOutput::Stat)?)
 }
 
-fn changed_files_in(cwd: Option<&Path>) -> Result<Vec<String>> {
-    Ok(output_in(cwd, ["diff", "--name-only"])?
+fn changed_files_for_in(cwd: Option<&Path>, source: &DiffSource) -> Result<Vec<String>> {
+    Ok(output_in(cwd, diff_args(source, DiffOutput::NameOnly)?)?
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -51,8 +104,8 @@ fn changed_files_in(cwd: Option<&Path>) -> Result<Vec<String>> {
         .collect())
 }
 
-fn changed_line_count_in(cwd: Option<&Path>) -> Result<usize> {
-    let numstat = output_in(cwd, ["diff", "--numstat"])?;
+fn changed_line_count_for_in(cwd: Option<&Path>, source: &DiffSource) -> Result<usize> {
+    let numstat = output_in(cwd, diff_args(source, DiffOutput::NumStat)?)?;
     Ok(numstat
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -69,6 +122,50 @@ fn changed_line_count_in(cwd: Option<&Path>) -> Result<usize> {
             added + deleted
         })
         .sum())
+}
+
+enum DiffOutput {
+    Patch,
+    Stat,
+    NameOnly,
+    NumStat,
+}
+
+fn diff_args(source: &DiffSource, output: DiffOutput) -> Result<Vec<String>> {
+    source.validate()?;
+
+    let mut args = vec!["diff".to_string()];
+    match output {
+        DiffOutput::Patch => args.push("--no-ext-diff".to_string()),
+        DiffOutput::Stat => args.push("--stat".to_string()),
+        DiffOutput::NameOnly => args.push("--name-only".to_string()),
+        DiffOutput::NumStat => args.push("--numstat".to_string()),
+    }
+
+    match source {
+        DiffSource::WorkingTree => {}
+        DiffSource::Cached => args.push("--cached".to_string()),
+        DiffSource::Base(base) => args.push(format!("{base}...HEAD")),
+        DiffSource::Range(range) => args.push(range.to_string()),
+    }
+
+    Ok(args)
+}
+
+fn validate_revision_arg(kind: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(anyhow!("--{kind} must not be empty"));
+    }
+    if value.starts_with('-') {
+        return Err(anyhow!("--{kind} must be a revision, not an option"));
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(anyhow!("--{kind} must not contain whitespace"));
+    }
+    if value.contains('\0') {
+        return Err(anyhow!("--{kind} must not contain NUL bytes"));
+    }
+    Ok(())
 }
 
 pub fn output<I, S>(args: I) -> Result<String>
@@ -164,6 +261,11 @@ mod tests {
         );
     }
 
+    fn commit_all(repo: &Path, message: &str) {
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-m", message]);
+    }
+
     fn fixture_repo() -> TempDir {
         let repo = TempDir::new("repo");
         run_git(repo.path(), &["init"]);
@@ -181,6 +283,7 @@ mod tests {
         .unwrap();
         run_git(repo.path(), &["add", "."]);
         run_git(repo.path(), &["commit", "-m", "initial"]);
+        run_git(repo.path(), &["branch", "-M", "main"]);
         repo
     }
 
@@ -204,19 +307,112 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            changed_files_in(Some(repo.path())).unwrap(),
+            changed_files_for_in(Some(repo.path()), &DiffSource::WorkingTree).unwrap(),
             vec!["src/lib.rs"]
         );
-        assert_eq!(changed_line_count_in(Some(repo.path())).unwrap(), 6);
+        assert_eq!(
+            changed_line_count_for_in(Some(repo.path()), &DiffSource::WorkingTree).unwrap(),
+            6
+        );
         assert!(status_short_in(Some(repo.path()))
             .unwrap()
             .contains("M src/lib.rs"));
-        assert!(diff_in(Some(repo.path()))
+        assert!(diff_for_in(Some(repo.path()), &DiffSource::WorkingTree)
             .unwrap()
             .contains("+pub fn extra()"));
-        assert!(diff_stat_in(Some(repo.path()))
+        assert!(
+            diff_stat_for_in(Some(repo.path()), &DiffSource::WorkingTree)
+                .unwrap()
+                .contains("src/lib.rs")
+        );
+    }
+
+    #[test]
+    fn cached_diff_source_reports_staged_changes() {
+        let repo = fixture_repo();
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn answer() -> u8 {\n    2\n}\n",
+        )
+        .unwrap();
+        run_git(repo.path(), &["add", "src/lib.rs"]);
+
+        let source = DiffSource::Cached;
+
+        assert_eq!(
+            changed_files_for_in(Some(repo.path()), &source).unwrap(),
+            vec!["src/lib.rs"]
+        );
+        assert!(diff_for_in(Some(repo.path()), &source)
             .unwrap()
-            .contains("src/lib.rs"));
+            .contains("+    2"));
+        assert!(diff_for_in(Some(repo.path()), &DiffSource::WorkingTree)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn range_diff_source_reports_committed_changes() {
+        let repo = fixture_repo();
+        let base = output_in(Some(repo.path()), ["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn answer() -> u8 {\n    2\n}\n",
+        )
+        .unwrap();
+        commit_all(repo.path(), "change answer");
+
+        let source = DiffSource::Range(format!("{base}..HEAD"));
+
+        assert_eq!(
+            changed_files_for_in(Some(repo.path()), &source).unwrap(),
+            vec!["src/lib.rs"]
+        );
+        assert!(diff_for_in(Some(repo.path()), &source)
+            .unwrap()
+            .contains("+    2"));
+    }
+
+    #[test]
+    fn base_diff_source_uses_merge_base_to_head() {
+        let repo = fixture_repo();
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn answer() -> u8 {\n    2\n}\n",
+        )
+        .unwrap();
+        commit_all(repo.path(), "feature change");
+
+        run_git(repo.path(), &["checkout", "main"]);
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn answer() -> u8 {\n    9\n}\n",
+        )
+        .unwrap();
+        commit_all(repo.path(), "main change");
+
+        run_git(repo.path(), &["checkout", "feature"]);
+        let diff = diff_for_in(Some(repo.path()), &DiffSource::Base("main".to_string())).unwrap();
+
+        assert!(diff.contains("+    2"));
+        assert!(!diff.contains("-    9"));
+    }
+
+    #[test]
+    fn revision_validation_rejects_options_and_ranges_in_base() {
+        let option_error = DiffSource::Range("--stat".to_string())
+            .validate()
+            .unwrap_err();
+        assert!(option_error.to_string().contains("not an option"));
+
+        let base_error = DiffSource::Base("main..HEAD".to_string())
+            .validate()
+            .unwrap_err();
+        assert!(base_error.to_string().contains("use --range"));
     }
 
     #[test]

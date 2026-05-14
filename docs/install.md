@@ -60,6 +60,7 @@ In a project repo:
 
 ```sh
 rbtc init
+rbtc models configure --detect
 rbtc install claude
 ```
 
@@ -75,6 +76,8 @@ This creates:
 
 Commit `.rebotica.yml` when the team wants shared governance rules, provider routes, model aliases, and safety limits. Keep `.rebotica/runs/` private; the generated `.rebotica/.gitignore` ignores it.
 
+`rbtc init` does not require a running provider. If model routes are empty, run `rbtc models configure --detect` when LM Studio or another compatible provider has exactly one loaded model, or run `rbtc models configure --model MODEL_ID` to configure routes manually.
+
 Install other adapters as needed:
 
 ```sh
@@ -82,6 +85,8 @@ rbtc install codex
 rbtc install github
 rbtc install all
 ```
+
+The GitHub adapter includes repository governance assets, including a Rebotica comment-card issue template. Comment cards are local-first product feedback about Rebotica; submission still requires explicit consent through `rbtc comment-card consent`.
 
 In restricted agent sandboxes, stage Codex skills under `.rebotica` instead of writing directly to `.agents`:
 

@@ -1,12 +1,12 @@
 # Local Model Delegation
 
-Use this skill when the root coordinator wants help from local models through Rebotica for bounded review, explanation, test proposal, documentation cleanup, or small patch drafting.
+Use this skill when Prime wants help from local models through Rebotica for bounded review, explanation, test proposal, documentation cleanup, or small patch drafting.
 
 Rebotica is advisory by default. Local workers do not own architecture, commits, pushes, merges, or final acceptance.
 
 ## Allowed Work
 
-- Review current diff.
+- Review a selected git diff.
 - Explain selected files.
 - Propose missing tests.
 - Draft small bounded patches.
@@ -43,14 +43,16 @@ Use:
 
 ```sh
 rbtc review
+rbtc review --base origin/main
 rbtc explain path/to/file
 rbtc tests path/to/file
 rbtc patch .rebotica/tasks/task.yml --dry-run
 rbtc guard-diff
+rbtc guard-diff --base origin/main
 ```
 
 If `rbtc` is not on `PATH`, use the harness wrapper path directly.
 
 ## Acceptance
 
-Never accept local worker output solely because it was generated. The root coordinator must review the content, verify scope, and run appropriate checks.
+Never accept local worker output solely because it was generated. Prime must review the content, verify scope, and run appropriate checks.
