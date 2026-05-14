@@ -61,7 +61,8 @@ Default behavior should remain advisory unless a command name and task envelope 
 Before a tag:
 
 ```sh
-make verify
+just verify
+just coverage
 rbtc health
 rbtc smoke --model MODEL_ALIAS_OR_ID
 ```

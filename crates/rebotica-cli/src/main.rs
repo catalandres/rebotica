@@ -96,7 +96,7 @@ struct InstallArgs {
     target_dir: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum InstallTarget {
     Claude,
     Codex,
@@ -442,9 +442,13 @@ async fn smoke(args: SmokeArgs) -> Result<()> {
 
 fn init_project(args: InitArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    init_project_at(&cwd, args.force, None)
+}
+
+fn init_project_at(cwd: &Path, force: bool, template_override: Option<&str>) -> Result<()> {
     let config_path = cwd.join(".rebotica.yml");
     let state_dir = cwd.join(".rebotica");
-    if config_path.exists() && !args.force {
+    if config_path.exists() && !force {
         return Err(anyhow!(
             ".rebotica.yml already exists. Use --force to overwrite."
         ));
@@ -457,12 +461,15 @@ fn init_project(args: InitArgs) -> Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "project".to_string());
-    let template = read_harness_file("templates/project.rebotica.yml")?
-        .replace("name: example-project", &format!("name: {project_name}"));
+    let raw_template = match template_override {
+        Some(template) => template.to_string(),
+        None => read_harness_file("templates/project.rebotica.yml")?,
+    };
+    let template = raw_template.replace("name: example-project", &format!("name: {project_name}"));
     fs::write(&config_path, template)?;
 
     let state_ignore = state_dir.join(".gitignore");
-    if !state_ignore.exists() || args.force {
+    if !state_ignore.exists() || force {
         fs::write(&state_ignore, "runs/\n")?;
     }
 
@@ -1273,4 +1280,166 @@ fn language_for(file: &str) -> String {
         .and_then(|extension| extension.to_str())
         .unwrap_or("text")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::error::ErrorKind;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "rebotica-cli-{name}-{}-{suffix}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("temp dir should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn install_targets_parse_public_variants() {
+        for (target, expected) in [
+            ("claude", InstallTarget::Claude),
+            ("codex", InstallTarget::Codex),
+            ("github", InstallTarget::Github),
+            ("all", InstallTarget::All),
+        ] {
+            let cli = Cli::try_parse_from(["rbtc", "install", target]).unwrap();
+            let Some(Command::Install(args)) = cli.command else {
+                panic!("expected install command for {target}");
+            };
+            assert_eq!(args.target, expected);
+        }
+    }
+
+    #[test]
+    fn version_is_a_flag_not_a_subcommand() {
+        let subcommand_error = Cli::try_parse_from(["rbtc", "version"]).unwrap_err();
+        assert_eq!(subcommand_error.kind(), ErrorKind::InvalidSubcommand);
+
+        let flag_error = Cli::try_parse_from(["rbtc", "--version"]).unwrap_err();
+        assert_eq!(flag_error.kind(), ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn init_project_creates_config_and_private_project_state() {
+        let temp = TempDir::new("init");
+        let template = r#"project:
+  name: example-project
+  type: unknown
+
+models:
+  default: ""
+"#;
+
+        init_project_at(temp.path(), false, Some(template)).unwrap();
+
+        let project_name = temp
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let config = fs::read_to_string(temp.path().join(".rebotica.yml")).unwrap();
+        assert!(config.contains(&format!("name: {project_name}")));
+        assert!(temp.path().join(".rebotica/tasks").is_dir());
+        assert!(temp.path().join(".rebotica/runs").is_dir());
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".rebotica/.gitignore")).unwrap(),
+            "runs/\n"
+        );
+    }
+
+    #[test]
+    fn init_project_refuses_to_overwrite_existing_config_without_force() {
+        let temp = TempDir::new("init-existing");
+        fs::write(temp.path().join(".rebotica.yml"), "existing: true\n").unwrap();
+
+        let error = init_project_at(temp.path(), false, Some("project: {}\n")).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains(".rebotica.yml already exists. Use --force to overwrite."));
+        assert!(!temp.path().join(".rebotica/tasks").exists());
+    }
+
+    #[test]
+    fn init_project_force_overwrites_config_and_state_gitignore() {
+        let temp = TempDir::new("init-force");
+        fs::create_dir_all(temp.path().join(".rebotica")).unwrap();
+        fs::write(temp.path().join(".rebotica.yml"), "existing: true\n").unwrap();
+        fs::write(temp.path().join(".rebotica/.gitignore"), "old\n").unwrap();
+
+        init_project_at(
+            temp.path(),
+            true,
+            Some("project:\n  name: example-project\n"),
+        )
+        .unwrap();
+
+        let config = fs::read_to_string(temp.path().join(".rebotica.yml")).unwrap();
+        assert!(config.contains("project:"));
+        assert!(!config.contains("existing: true"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join(".rebotica/.gitignore")).unwrap(),
+            "runs/\n"
+        );
+    }
+
+    #[test]
+    fn provider_summary_includes_implicit_lmstudio_default() {
+        let summary = provider_summary(&ProjectConfig::default());
+
+        assert_eq!(summary["default"], "lmstudio");
+        let providers = summary["providers"].as_array().unwrap();
+        assert!(providers.iter().any(|provider| {
+            provider["name"] == "lmstudio"
+                && provider["base_url"] == "http://127.0.0.1:1234/v1"
+                && provider["implicit"] == true
+        }));
+    }
+
+    #[test]
+    fn validate_config_fails_zero_limits() {
+        let mut config = ProjectConfig::default();
+        config.default_limits.max_files_changed = 0;
+        config.default_limits.max_changed_lines = 0;
+        let loaded = LoadedConfig {
+            path: Some(PathBuf::from(".rebotica.yml")),
+            raw: String::new(),
+            config,
+        };
+
+        let checks = validate_config(&loaded);
+
+        assert!(checks.iter().any(|check| {
+            check.status == "fail" && check.id == "config.limits.max_files_changed"
+        }));
+        assert!(checks.iter().any(|check| {
+            check.status == "fail" && check.id == "config.limits.max_changed_lines"
+        }));
+    }
 }

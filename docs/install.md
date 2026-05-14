@@ -38,16 +38,19 @@ rbtc --version
 rbtc health
 ```
 
-## Make Targets
+## Just Recipes
 
 ```sh
-make build
-make release
-make install
-make verify
+just build
+just release
+just install
+just verify
+just coverage
 ```
 
-`make install PREFIX=/opt/homebrew` installs the shim into `/opt/homebrew/bin`.
+`just install /opt/homebrew` installs the shim into `/opt/homebrew/bin`.
+`PREFIX=/opt/homebrew just install` is also supported.
+`just coverage` requires `llvm-profdata` and `llvm-cov` on `PATH`.
 
 ## Project Onboarding
 

@@ -310,3 +310,148 @@ fn default_provider_kind() -> String {
 fn default_true() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "rebotica-core-{name}-{}-{suffix}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("temp dir should be created");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn read_from_prefers_root_config_over_nested_project_config() {
+        let temp = TempDir::new("config-precedence");
+        fs::create_dir_all(temp.path().join(".rebotica")).unwrap();
+        fs::write(
+            temp.path().join(".rebotica.yml"),
+            "project:\n  name: root-config\nmodels:\n  default: root-model\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join(".rebotica/project.yml"),
+            "project:\n  name: nested-config\nmodels:\n  default: nested-model\n",
+        )
+        .unwrap();
+
+        let loaded = LoadedConfig::read_from(temp.path()).unwrap();
+
+        assert_eq!(loaded.path, Some(temp.path().join(".rebotica.yml")));
+        assert_eq!(loaded.config.project.name, "root-config");
+        assert_eq!(loaded.config.models.default, "root-model");
+    }
+
+    #[test]
+    fn read_from_uses_nested_project_config_when_root_config_is_missing() {
+        let temp = TempDir::new("nested-config");
+        fs::create_dir_all(temp.path().join(".rebotica")).unwrap();
+        fs::write(
+            temp.path().join(".rebotica/project.yml"),
+            "project:\n  name: nested-config\nmodels:\n  default: nested-model\n",
+        )
+        .unwrap();
+
+        let loaded = LoadedConfig::read_from(temp.path()).unwrap();
+
+        assert_eq!(loaded.path, Some(temp.path().join(".rebotica/project.yml")));
+        assert_eq!(loaded.config.project.name, "nested-config");
+        assert_eq!(loaded.config.models.default, "nested-model");
+    }
+
+    #[test]
+    fn read_from_returns_defaults_without_project_config() {
+        let temp = TempDir::new("no-config");
+
+        let loaded = LoadedConfig::read_from(temp.path()).unwrap();
+
+        assert_eq!(loaded.path, None);
+        assert_eq!(loaded.raw_or_placeholder(), "(none)");
+        assert_eq!(loaded.config.providers.default, "lmstudio");
+        assert_eq!(loaded.config.default_limits.max_changed_lines, 300);
+        assert_eq!(loaded.config.default_limits.max_files_changed, 5);
+    }
+
+    #[test]
+    fn model_for_mode_resolves_aliases_and_falls_back_to_default_route() {
+        let mut config = ProjectConfig::default();
+        config.models.default = "default-worker".to_string();
+        config.models.review = "review-worker".to_string();
+        config.models.aliases.insert(
+            "default-worker".to_string(),
+            "raw-default-model".to_string(),
+        );
+        config
+            .models
+            .aliases
+            .insert("review-worker".to_string(), "raw-review-model".to_string());
+
+        assert_eq!(
+            model_for_mode(&config, WorkerMode::Review),
+            Some("raw-review-model".to_string())
+        );
+        assert_eq!(
+            model_for_mode(&config, WorkerMode::Tests),
+            Some("raw-default-model".to_string())
+        );
+        assert_eq!(resolve_model_alias(&config, "unknown"), "unknown");
+    }
+
+    #[test]
+    fn model_for_mode_returns_none_when_no_route_is_configured() {
+        let config = ProjectConfig::default();
+
+        assert_eq!(model_for_mode(&config, WorkerMode::Default), None);
+        assert_eq!(model_for_mode(&config, WorkerMode::Patch), None);
+    }
+
+    #[test]
+    fn parses_allowed_and_forbidden_files_from_task_envelope() {
+        let envelope = r#"
+task_id: test
+allowed_files:
+  - src/lib.rs
+  - README.md
+  - 42
+forbidden_files:
+  - .env
+  - secrets/
+"#;
+
+        assert_eq!(
+            parse_allowed_files_from_envelope(envelope).unwrap(),
+            vec!["src/lib.rs".to_string(), "README.md".to_string()]
+        );
+        assert_eq!(
+            parse_forbidden_files_from_envelope(envelope).unwrap(),
+            vec![".env".to_string(), "secrets/".to_string()]
+        );
+    }
+}

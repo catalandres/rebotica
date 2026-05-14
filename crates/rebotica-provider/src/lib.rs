@@ -214,3 +214,178 @@ struct Choice {
 struct ChoiceMessage {
     content: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rebotica_core::{LoadedConfig, ProjectConfig, ProviderConfig};
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvGuard {
+        previous: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn clear(keys: &[&'static str]) -> Self {
+            let previous = keys
+                .iter()
+                .map(|key| (*key, std::env::var_os(key)))
+                .collect::<Vec<_>>();
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            Self { previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock should not be poisoned")
+    }
+
+    fn loaded(config: ProjectConfig) -> LoadedConfig {
+        LoadedConfig {
+            path: None,
+            raw: String::new(),
+            config,
+        }
+    }
+
+    #[test]
+    fn resolves_implicit_lmstudio_defaults() {
+        let _lock = env_lock();
+        let _env = EnvGuard::clear(&["REBOTICA_PROVIDER", "REBOTICA_BASE_URL"]);
+        let settings = ProviderSettings::resolve(
+            &loaded(ProjectConfig::default()),
+            ProviderOverrides {
+                provider: None,
+                base_url: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(settings.name, "lmstudio");
+        assert_eq!(settings.base_url, "http://127.0.0.1:1234/v1");
+        assert!(settings.headers.is_empty());
+    }
+
+    #[test]
+    fn resolves_configured_provider_and_trims_base_url() {
+        let _lock = env_lock();
+        let _env = EnvGuard::clear(&["REBOTICA_PROVIDER", "REBOTICA_BASE_URL"]);
+        let mut config = ProjectConfig::default();
+        config.providers.default = "openai".to_string();
+        config.providers.entries.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                kind: "openai-compatible".to_string(),
+                base_url: "https://api.openai.com/v1/".to_string(),
+                ..ProviderConfig::default()
+            },
+        );
+
+        let settings = ProviderSettings::resolve(
+            &loaded(config),
+            ProviderOverrides {
+                provider: None,
+                base_url: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(settings.name, "openai");
+        assert_eq!(settings.base_url, "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn command_line_overrides_take_precedence_over_provider_env() {
+        let _lock = env_lock();
+        let _env = EnvGuard::clear(&["REBOTICA_PROVIDER", "REBOTICA_BASE_URL"]);
+        std::env::set_var("REBOTICA_PROVIDER", "env-provider");
+        std::env::set_var("REBOTICA_BASE_URL", "http://env.example/v1");
+
+        let settings = ProviderSettings::resolve(
+            &loaded(ProjectConfig::default()),
+            ProviderOverrides {
+                provider: Some("cli-provider".to_string()),
+                base_url: Some("http://cli.example/v1".to_string()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(settings.name, "cli-provider");
+        assert_eq!(settings.base_url, "http://cli.example/v1");
+    }
+
+    #[test]
+    fn resolves_api_key_headers_from_configured_env_var() {
+        let _lock = env_lock();
+        let _env = EnvGuard::clear(&[
+            "REBOTICA_PROVIDER",
+            "REBOTICA_BASE_URL",
+            "REBOTICA_TEST_PROVIDER_KEY",
+        ]);
+        std::env::set_var("REBOTICA_TEST_PROVIDER_KEY", "secret-token");
+        let mut config = ProjectConfig::default();
+        config.providers.default = "remote".to_string();
+        config.providers.entries.insert(
+            "remote".to_string(),
+            ProviderConfig {
+                kind: "openai-compatible".to_string(),
+                base_url: "https://remote.example/v1".to_string(),
+                api_key_env: "REBOTICA_TEST_PROVIDER_KEY".to_string(),
+                ..ProviderConfig::default()
+            },
+        );
+
+        let settings = ProviderSettings::resolve(
+            &loaded(config),
+            ProviderOverrides {
+                provider: None,
+                base_url: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.headers.get("Authorization").map(String::as_str),
+            Some("Bearer secret-token")
+        );
+    }
+
+    #[test]
+    fn unknown_provider_reports_actionable_error() {
+        let _lock = env_lock();
+        let _env = EnvGuard::clear(&["REBOTICA_PROVIDER", "REBOTICA_BASE_URL"]);
+
+        let error = ProviderSettings::resolve(
+            &loaded(ProjectConfig::default()),
+            ProviderOverrides {
+                provider: Some("missing".to_string()),
+                base_url: None,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Add providers.missing.base_url or pass --base-url"));
+    }
+}
