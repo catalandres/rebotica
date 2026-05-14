@@ -44,12 +44,14 @@ rbtc health
 just build
 just release
 just install
+just install-smoke
 just verify
 just coverage
 ```
 
 `just install /opt/homebrew` installs the shim into `/opt/homebrew/bin`.
 `PREFIX=/opt/homebrew just install` is also supported.
+`just install-smoke` installs into `target/local-install/prefix` and verifies an installed `rbtc` against a sandbox project.
 `just coverage` requires `llvm-profdata` and `llvm-cov` on `PATH`.
 
 ## Project Onboarding
@@ -105,6 +107,9 @@ Teams that want faster iteration can track `main`, but project work should prefe
 The intended order is:
 
 1. Source install with a shim.
-2. Tagged GitHub releases with checksums.
-3. Homebrew tap once the command surface stabilizes.
-4. Optional prebuilt binary artifacts after the runtime asset story is settled.
+2. Local install smoke harness.
+3. Tagged GitHub releases with checksums.
+4. Homebrew tap once the command surface stabilizes.
+5. Optional prebuilt binary artifacts after the runtime asset story is settled.
+
+See [Release](release.md) for the current release and Homebrew packaging strategy.

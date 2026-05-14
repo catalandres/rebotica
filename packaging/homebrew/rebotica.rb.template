@@ -1,0 +1,36 @@
+class Rebotica < Formula
+  desc "Governed local-worker harness for root coding agents"
+  homepage "https://github.com/catalandres/rebotica"
+  url "https://github.com/catalandres/rebotica/archive/refs/tags/v0.1.0.tar.gz"
+  sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"
+  license "MIT"
+
+  depends_on "git"
+  depends_on "rust" => :build
+
+  def install
+    system "cargo", "build", "--release", "--locked", "-p", "rebotica-cli"
+
+    libexec.install "target/release/rbtc"
+    libexec.install "claude", "codex", "docs", "github", "mcp", "prompts", "skills", "templates"
+
+    (bin/"rbtc").write <<~SH
+      #!/bin/sh
+      set -eu
+      export REBOTICA_HOME="#{libexec}"
+      exec "#{libexec}/rbtc" "$@"
+    SH
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/rbtc --version")
+    system bin/"rbtc", "providers", "--json"
+
+    (testpath/"project").mkpath
+    cd testpath/"project" do
+      system bin/"rbtc", "init"
+      assert_path_exists testpath/"project/.rebotica.yml"
+      assert_path_exists testpath/"project/.rebotica/tasks"
+    end
+  end
+end

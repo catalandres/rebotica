@@ -61,8 +61,7 @@ Default behavior should remain advisory unless a command name and task envelope 
 Before a tag:
 
 ```sh
-just verify
-just coverage
+just release-check
 rbtc health
 rbtc smoke --model MODEL_ALIAS_OR_ID
 ```
@@ -74,3 +73,5 @@ Then check:
 - `templates/project.rebotica.yml` matches documented config.
 - Prompt contracts match command behavior.
 - Run logs do not store secrets.
+
+See [Release](release.md) for local install smoke tests and Homebrew packaging.

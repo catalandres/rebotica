@@ -1,4 +1,5 @@
 prefix := env_var_or_default("PREFIX", env_var("HOME") + "/.local")
+local_prefix := env_var_or_default("REBOTICA_LOCAL_PREFIX", justfile_directory() + "/target/local-install/prefix")
 
 default:
     @just --list
@@ -12,11 +13,19 @@ release:
 install prefix=prefix:
     scripts/install.sh "{{prefix}}"
 
+install-smoke prefix=local_prefix:
+    scripts/local-install-smoke.sh "{{prefix}}"
+
 verify:
     cargo fmt --all -- --check
     cargo test --workspace
     cargo build --workspace
     bin/rbtc help >/dev/null
+
+release-check:
+    just verify
+    just coverage
+    just install-smoke
 
 coverage:
     #!/usr/bin/env sh

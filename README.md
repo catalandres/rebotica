@@ -153,6 +153,7 @@ Read more in [docs/philosophy.md](docs/philosophy.md).
 - [Safety Model](docs/safety-model.md)
 - [Self-Healing](docs/self-healing.md)
 - [Roadmap](docs/roadmap.md)
+- [Release](docs/release.md)
 
 ## Repository Layout
 
