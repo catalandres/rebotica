@@ -7,8 +7,14 @@ Use `rebotica.rb.template` as the starting point for a tap formula.
 Expected tap:
 
 ```sh
-brew tap catalandres/rebotica
+brew tap catalandres/tap
 brew install rebotica
+```
+
+Direct install is preferred for users:
+
+```sh
+brew install catalandres/tap/rebotica
 ```
 
 During early releases, prefer source builds from signed tags. Bottles can come after the CLI and runtime asset layout have settled.

@@ -68,16 +68,22 @@ Check the public conventions before release:
 
 ## Homebrew Strategy
 
-Start with a dedicated tap, likely:
+Start with a general-purpose personal tap:
 
 ```sh
-catalandres/homebrew-rebotica
+catalandres/homebrew-tap
 ```
 
 Users would install with:
 
 ```sh
-brew tap catalandres/rebotica
+brew install catalandres/tap/rebotica
+```
+
+Manual tap installation is also fine:
+
+```sh
+brew tap catalandres/tap
 brew install rebotica
 ```
 
@@ -99,6 +105,13 @@ Then replace the formula `url` and `sha256`, and test locally:
 ```sh
 brew install --build-from-source --verbose ./Formula/rebotica.rb
 brew test rebotica
+```
+
+After the tap is published, test the user-facing path:
+
+```sh
+brew install --build-from-source --verbose catalandres/tap/rebotica
+brew test catalandres/tap/rebotica
 ```
 
 ## Bottles Later

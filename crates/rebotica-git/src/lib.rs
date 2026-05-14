@@ -115,7 +115,10 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     struct TempDir {
         path: PathBuf,
@@ -127,9 +130,10 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system clock should be after unix epoch")
                 .as_nanos();
+            let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!(
-                "rebotica-git-{name}-{}-{suffix}",
-                std::process::id()
+                "rebotica-git-{name}-{}-{suffix}-{counter}",
+                std::process::id(),
             ));
             fs::create_dir_all(&path).expect("temp dir should be created");
             Self { path }
