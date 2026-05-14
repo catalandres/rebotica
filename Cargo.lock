@@ -68,73 +68,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "atelier-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atelier-core",
- "atelier-git",
- "atelier-guard",
- "atelier-provider",
- "atelier-runlog",
- "clap",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "atelier-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_yaml",
-]
-
-[[package]]
-name = "atelier-git"
-version = "0.1.0"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
-name = "atelier-guard"
-version = "0.1.0"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
-name = "atelier-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
-]
-
-[[package]]
-name = "atelier-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "atelier-core",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "atelier-runlog"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -883,6 +816,73 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "rebotica-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rebotica-core",
+ "rebotica-git",
+ "rebotica-guard",
+ "rebotica-provider",
+ "rebotica-runlog",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rebotica-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
+name = "rebotica-git"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "rebotica-guard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "rebotica-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "rebotica-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rebotica-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "rebotica-runlog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

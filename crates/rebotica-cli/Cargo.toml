@@ -1,21 +1,21 @@
 [package]
-name = "atelier-cli"
+name = "rebotica-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "atelier"
+name = "rbtc"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-atelier-core.workspace = true
-atelier-git.workspace = true
-atelier-guard.workspace = true
-atelier-provider.workspace = true
-atelier-runlog.workspace = true
+rebotica-core.workspace = true
+rebotica-git.workspace = true
+rebotica-guard.workspace = true
+rebotica-provider.workspace = true
+rebotica-runlog.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

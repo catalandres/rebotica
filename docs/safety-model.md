@@ -1,6 +1,6 @@
 # Safety Model
 
-Atelier relies on layered safety rather than model obedience alone.
+Rebotica relies on layered safety rather than model obedience alone.
 
 ## Scope Controls
 
@@ -45,4 +45,4 @@ Worker output must separate:
 
 ## Guardrails Today
 
-The current CLI enforces forbidden path checks and diff-size checks through `atelier guard-diff`. Patch application is intentionally disabled in v0.1.
+The current CLI enforces forbidden path checks and diff-size checks through `rbtc guard-diff`. Patch application is intentionally disabled in v0.1.

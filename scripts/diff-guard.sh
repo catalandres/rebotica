@@ -1,3 +1,3 @@
 #!/usr/bin/env sh
 set -eu
-echo "Use atelier guard-diff or crates/atelier-guard for diff guards."
+echo "Use rbtc guard-diff or crates/rebotica-guard for diff guards."

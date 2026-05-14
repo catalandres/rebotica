@@ -1,6 +1,6 @@
 # Architecture
 
-Atelier has three layers:
+Rebotica has three layers:
 
 ```text
 root coordinator
@@ -17,22 +17,22 @@ The Rust implementation lives in `crates/`.
 
 Important boundaries:
 
-- `atelier-core`: config schema, task envelopes, model routing, and shared policy types.
-- `atelier-provider`: OpenAI-compatible HTTP calls, provider auth, and provider selection.
-- `atelier-git`: read-only git context and diff metrics.
-- `atelier-guard`: forbidden path and diff-size checks.
-- `atelier-runlog`: private run storage and scorecard bootstrap.
-- `atelier-cli`: user-facing command behavior.
-- `atelier-mcp`: future narrow MCP server.
+- `rebotica-core`: config schema, task envelopes, model routing, and shared policy types.
+- `rebotica-provider`: OpenAI-compatible HTTP calls, provider auth, and provider selection.
+- `rebotica-git`: read-only git context and diff metrics.
+- `rebotica-guard`: forbidden path and diff-size checks.
+- `rebotica-runlog`: private run storage and scorecard bootstrap.
+- `rebotica-cli`: user-facing command behavior.
+- `rebotica-mcp`: future narrow MCP server.
 - `skills/`: canonical skills that can be installed into root-agent adapters.
 
 ## Shell Bridge First
 
-The first usable interface is `bin/atelier`. It keeps the tool easy to call from Claude Code, terminals, and future roots.
+The first usable interface is `bin/rbtc`. It keeps the tool easy to call from Claude Code, terminals, and future roots.
 
 ## Provider And Model Routing
 
-Atelier supports simple aliases in `.atelier.yml`.
+Rebotica supports simple aliases in `.rebotica.yml`.
 
 Provider names keep URLs and auth details out of commands:
 

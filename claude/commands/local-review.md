@@ -1,12 +1,12 @@
 # /local-review
 
-Review the current git diff with Atelier.
+Review the current git diff with Rebotica.
 
-1. Confirm the repository has a `.atelier.yml` or initialize one if the user asks.
+1. Confirm the repository has a `.rebotica.yml` or initialize one if the user asks.
 2. Run:
 
 ```sh
-atelier review
+rbtc review
 ```
 
 3. Treat the output as advisory.

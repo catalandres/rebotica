@@ -1,8 +1,8 @@
 # Local Model Delegation
 
-Use this skill when the root coordinator wants help from local models through Atelier for bounded review, explanation, test proposal, documentation cleanup, or small patch drafting.
+Use this skill when the root coordinator wants help from local models through Rebotica for bounded review, explanation, test proposal, documentation cleanup, or small patch drafting.
 
-Atelier is advisory by default. Local workers do not own architecture, commits, pushes, merges, or final acceptance.
+Rebotica is advisory by default. Local workers do not own architecture, commits, pushes, merges, or final acceptance.
 
 ## Allowed Work
 
@@ -27,11 +27,11 @@ Atelier is advisory by default. Local workers do not own architecture, commits, 
 
 ## Workflow
 
-1. Read `.atelier.yml` or `.atelier/project.yml`.
+1. Read `.rebotica.yml` or `.rebotica/project.yml`.
 2. Define a narrow task.
 3. Create or inspect the task envelope.
 4. Validate allowed, forbidden, and sensitive files.
-5. Invoke Atelier with `atelier`.
+5. Invoke Rebotica with `rbtc`.
 6. Treat local output as advisory.
 7. Apply a proposed patch only after reviewing the diff.
 8. Run project checks.
@@ -42,14 +42,14 @@ Atelier is advisory by default. Local workers do not own architecture, commits, 
 Use:
 
 ```sh
-atelier review
-atelier explain path/to/file
-atelier tests path/to/file
-atelier patch .atelier/tasks/task.yml --dry-run
-atelier guard-diff
+rbtc review
+rbtc explain path/to/file
+rbtc tests path/to/file
+rbtc patch .rebotica/tasks/task.yml --dry-run
+rbtc guard-diff
 ```
 
-If `atelier` is not on `PATH`, use the harness wrapper path directly.
+If `rbtc` is not on `PATH`, use the harness wrapper path directly.
 
 ## Acceptance
 

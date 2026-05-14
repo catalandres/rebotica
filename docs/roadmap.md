@@ -1,6 +1,6 @@
 # Roadmap
 
-Atelier should grow through proof, not ambition.
+Rebotica should grow through proof, not ambition.
 
 ## Phase 1: Shell Bridge
 
@@ -33,9 +33,9 @@ Patch drafting should happen in isolated git worktrees before direct application
 Expected pattern:
 
 ```sh
-git worktree add ../project-atelier-worker-1 -b ai/atelier-worker-1 main
-cd ../project-atelier-worker-1
-atelier patch .atelier/tasks/task.yml --dry-run
+git worktree add ../project-rebotica-worker-1 -b ai/rebotica-worker-1 main
+cd ../project-rebotica-worker-1
+rbtc patch .rebotica/tasks/task.yml --dry-run
 ```
 
 The root coordinator reviews the diff and runs checks.
@@ -68,7 +68,7 @@ Make coworker installation boring:
 
 ## Phase 7: Skills Broker
 
-Make canonical Atelier skills installable across root-agent adapters:
+Make canonical Rebotica skills installable across root-agent adapters:
 
 - file-based Claude/Codex adapters first
 - GitHub repository governance assets

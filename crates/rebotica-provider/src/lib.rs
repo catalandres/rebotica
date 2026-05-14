@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use atelier_core::{LoadedConfig, ProviderConfig};
+use rebotica_core::{LoadedConfig, ProviderConfig};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -21,14 +21,14 @@ impl ProviderSettings {
     pub fn resolve(loaded: &LoadedConfig, overrides: ProviderOverrides) -> Result<Self> {
         let selected = overrides
             .provider
-            .or_else(|| std::env::var("ATELIER_PROVIDER").ok())
+            .or_else(|| std::env::var("REBOTICA_PROVIDER").ok())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| loaded.config.providers.default.clone());
 
         let default_url = "http://127.0.0.1:1234/v1";
         let (base_url, provider_config) = if let Some(base_url) = overrides
             .base_url
-            .or_else(|| std::env::var("ATELIER_BASE_URL").ok())
+            .or_else(|| std::env::var("REBOTICA_BASE_URL").ok())
             .filter(|value| !value.is_empty())
         {
             (base_url, loaded.config.providers.entries.get(&selected))

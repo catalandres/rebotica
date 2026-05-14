@@ -21,7 +21,7 @@ pub fn root() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".atelier")
+        .join(".rebotica")
 }
 
 pub fn runs_root() -> PathBuf {

@@ -1,13 +1,9 @@
 [package]
-name = "atelier-mcp"
+name = "rebotica-guard"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[[bin]]
-name = "atelier-mcp"
-path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true

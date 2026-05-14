@@ -129,7 +129,7 @@ pub struct LoadedConfig {
 
 impl LoadedConfig {
     pub fn read_from(cwd: &Path) -> Result<Self> {
-        let candidates = [cwd.join(".atelier.yml"), cwd.join(".atelier/project.yml")];
+        let candidates = [cwd.join(".rebotica.yml"), cwd.join(".rebotica/project.yml")];
         for candidate in candidates {
             if candidate.exists() {
                 let raw = fs::read_to_string(&candidate)

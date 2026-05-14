@@ -1,4 +1,4 @@
-name: Atelier Verify
+name: Rebotica Verify
 
 on:
   pull_request:

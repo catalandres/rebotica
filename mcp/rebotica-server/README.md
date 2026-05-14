@@ -1,8 +1,8 @@
-# Atelier MCP Server
+# Rebotica MCP Server
 
-This is a future Rust MCP bridge for Atelier.
+This is a future Rust MCP bridge for Rebotica.
 
-The MCP layer intentionally comes after the shell bridge. The first working contract is `atelier`, because it is easy to inspect, easy to log, and usable by any root coordinator.
+The MCP layer intentionally comes after the shell bridge. The first working contract is `rbtc`, because it is easy to inspect, easy to log, and usable by any root coordinator.
 
 When implemented, expose only narrow tools:
 
@@ -24,5 +24,5 @@ The MCP server should call the same Rust core policies as the CLI, including pro
 The current scaffold lives in:
 
 ```text
-crates/atelier-mcp
+crates/rebotica-mcp
 ```

@@ -1,12 +1,12 @@
 [workspace]
 members = [
-  "crates/atelier-cli",
-  "crates/atelier-core",
-  "crates/atelier-git",
-  "crates/atelier-guard",
-  "crates/atelier-mcp",
-  "crates/atelier-provider",
-  "crates/atelier-runlog"
+  "crates/rebotica-cli",
+  "crates/rebotica-core",
+  "crates/rebotica-git",
+  "crates/rebotica-guard",
+  "crates/rebotica-mcp",
+  "crates/rebotica-provider",
+  "crates/rebotica-runlog"
 ]
 resolver = "2"
 
@@ -14,7 +14,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/catalandres/atelier"
+repository = "https://github.com/catalandres/rebotica"
 
 [workspace.dependencies]
 anyhow = "1.0"
@@ -27,8 +27,8 @@ serde_yaml = "0.9"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1.18", features = ["v4"] }
 
-atelier-core = { path = "crates/atelier-core" }
-atelier-git = { path = "crates/atelier-git" }
-atelier-guard = { path = "crates/atelier-guard" }
-atelier-provider = { path = "crates/atelier-provider" }
-atelier-runlog = { path = "crates/atelier-runlog" }
+rebotica-core = { path = "crates/rebotica-core" }
+rebotica-git = { path = "crates/rebotica-git" }
+rebotica-guard = { path = "crates/rebotica-guard" }
+rebotica-provider = { path = "crates/rebotica-provider" }
+rebotica-runlog = { path = "crates/rebotica-runlog" }

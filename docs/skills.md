@@ -1,6 +1,6 @@
 # Skills
 
-Atelier can act as a skills multiplexer.
+Rebotica can act as a skills multiplexer.
 
 The near-term model is file-based:
 
@@ -15,8 +15,8 @@ skills/
 Root-agent adapters install those canonical skills into the places each tool expects:
 
 ```sh
-atelier install claude
-atelier install codex
+rbtc install claude
+rbtc install codex
 ```
 
 Claude also gets slash-command files from `claude/commands`. Codex gets the same canonical skills under `.agents/skills`.
@@ -35,7 +35,7 @@ Different root tools can consume that policy through different adapters without 
 
 ## Skills Server
 
-Atelier can become a skills server for larger root agents, but the first version should stay file-based.
+Rebotica can become a skills server for larger root agents, but the first version should stay file-based.
 
 A future server should expose narrow operations:
 
@@ -49,10 +49,10 @@ It should not expose broad filesystem mutation or arbitrary shell execution.
 
 ## GitHub
 
-GitHub is not a skills host in the same way. For GitHub, Atelier installs repository governance assets:
+GitHub is not a skills host in the same way. For GitHub, Rebotica installs repository governance assets:
 
 ```sh
-atelier install github
+rbtc install github
 ```
 
 Those assets can include workflows, pull request templates, issue templates, and release checklists. They should be copied into the repo so GitHub can run them without depending on local symlinks.
@@ -62,11 +62,11 @@ Those assets can include workflows, pull request templates, issue templates, and
 Possible CLI surface:
 
 ```sh
-atelier skills list
-atelier skills show local-model-delegation
-atelier skills install local-model-delegation --target claude
-atelier skills install local-model-delegation --target codex
-atelier skills serve --mcp
+rbtc skills list
+rbtc skills show local-model-delegation
+rbtc skills install local-model-delegation --target claude
+rbtc skills install local-model-delegation --target codex
+rbtc skills serve --mcp
 ```
 
 That should come after the file-based adapter path proves useful.

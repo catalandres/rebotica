@@ -1,6 +1,6 @@
 # /local-tests
 
-Ask Atelier for missing test proposals for selected files.
+Ask Rebotica for missing test proposals for selected files.
 
 Expected argument:
 
@@ -11,7 +11,7 @@ path/to/file [path/to/another-file]
 Run:
 
 ```sh
-atelier tests path/to/file
+rbtc tests path/to/file
 ```
 
 The local worker should propose tests, not edit files. The root coordinator decides whether to implement them.

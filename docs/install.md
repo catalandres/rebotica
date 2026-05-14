@@ -1,6 +1,6 @@
 # Installation
 
-Atelier is a Rust command-line tool plus a repository of prompts, templates, Claude assets, and docs. The installed command should know where the cloned repo lives, so installation uses a small shim that sets `ATELIER_HOME`.
+Rebotica is a Rust command-line tool plus a repository of prompts, templates, Claude assets, and docs. The installed command should know where the cloned repo lives, so installation uses a small shim that sets `REBOTICA_HOME`.
 
 ## Install From Source
 
@@ -9,8 +9,8 @@ Install a current stable Rust toolchain first.
 Clone the repo:
 
 ```sh
-git clone https://github.com/catalandres/atelier.git ~/Developer/atelier
-cd ~/Developer/atelier
+git clone https://github.com/catalandres/rebotica.git ~/Developer/rebotica
+cd ~/Developer/rebotica
 ```
 
 Install into `~/.local/bin`:
@@ -34,8 +34,8 @@ export PATH="$HOME/.local/bin:$PATH"
 Verify:
 
 ```sh
-atelier --version
-atelier health
+rbtc --version
+rbtc health
 ```
 
 ## Make Targets
@@ -54,34 +54,34 @@ make verify
 In a project repo:
 
 ```sh
-atelier init
-atelier install claude
+rbtc init
+rbtc install claude
 ```
 
 This creates:
 
 ```text
-.atelier.yml
-.atelier/
+.rebotica.yml
+.rebotica/
   .gitignore
   tasks/
   runs/
 ```
 
-Commit `.atelier.yml` when the team wants shared governance rules, provider routes, model aliases, and safety limits. Keep `.atelier/runs/` private; the generated `.atelier/.gitignore` ignores it.
+Commit `.rebotica.yml` when the team wants shared governance rules, provider routes, model aliases, and safety limits. Keep `.rebotica/runs/` private; the generated `.rebotica/.gitignore` ignores it.
 
 Install other adapters as needed:
 
 ```sh
-atelier install codex
-atelier install github
-atelier install all
+rbtc install codex
+rbtc install github
+rbtc install all
 ```
 
-In restricted agent sandboxes, stage Codex skills under `.atelier` instead of writing directly to `.agents`:
+In restricted agent sandboxes, stage Codex skills under `.rebotica` instead of writing directly to `.agents`:
 
 ```sh
-atelier install all --target-dir .atelier/adapters/codex/skills
+rbtc install all --target-dir .rebotica/adapters/codex/skills
 ```
 
 ## Upgrades
@@ -89,7 +89,7 @@ atelier install all --target-dir .atelier/adapters/codex/skills
 For now, upgrade by pulling a tagged release and reinstalling the shim:
 
 ```sh
-cd ~/Developer/atelier
+cd ~/Developer/rebotica
 git fetch --tags
 git checkout v0.1.0
 scripts/install.sh

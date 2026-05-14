@@ -1,6 +1,6 @@
 # /local-explain
 
-Explain one or more files with Atelier.
+Explain one or more files with Rebotica.
 
 Expected argument:
 
@@ -11,7 +11,7 @@ path/to/file [path/to/another-file]
 Run:
 
 ```sh
-atelier explain path/to/file
+rbtc explain path/to/file
 ```
 
 Use the output as a second opinion for codebase understanding. Do not treat it as authoritative when it conflicts with the source.

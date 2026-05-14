@@ -5,8 +5,8 @@
 Install from a clone:
 
 ```sh
-git clone https://github.com/catalandres/atelier.git ~/Developer/atelier
-cd ~/Developer/atelier
+git clone https://github.com/catalandres/rebotica.git ~/Developer/rebotica
+cd ~/Developer/rebotica
 scripts/install.sh
 ```
 
@@ -16,18 +16,18 @@ Add the install directory to your shell path:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-For contributor builds inside this repo, `bin/atelier` builds and runs the debug executable directly with Cargo.
+For contributor builds inside this repo, `bin/rbtc` builds and runs the debug executable directly with Cargo.
 
 ## Check The Provider
 
 Start the configured provider, then run:
 
 ```sh
-atelier doctor
-atelier providers
-atelier models
-atelier health
-atelier smoke --model MODEL_ID
+rbtc doctor
+rbtc providers
+rbtc models
+rbtc health
+rbtc smoke --model MODEL_ID
 ```
 
 The default endpoint is:
@@ -39,9 +39,9 @@ http://127.0.0.1:1234/v1
 Override the provider, endpoint, or model when needed:
 
 ```sh
-export ATELIER_PROVIDER=lmstudio
-export ATELIER_BASE_URL=http://127.0.0.1:1234/v1
-export ATELIER_MODEL=MODEL_ID
+export REBOTICA_PROVIDER=lmstudio
+export REBOTICA_BASE_URL=http://127.0.0.1:1234/v1
+export REBOTICA_MODEL=MODEL_ID
 ```
 
 You can also use config aliases:
@@ -66,8 +66,8 @@ models:
 Then run:
 
 ```sh
-atelier smoke --model local-coder
-atelier health --provider lmstudio
+rbtc smoke --model local-coder
+rbtc health --provider lmstudio
 ```
 
 ## Onboard a Project
@@ -75,12 +75,12 @@ atelier health --provider lmstudio
 From a target repository:
 
 ```sh
-atelier init
+rbtc init
 ```
 
-This creates `.atelier.yml` plus `.atelier/tasks`, `.atelier/runs`, and `.atelier/.gitignore`.
+This creates `.rebotica.yml` plus `.rebotica/tasks`, `.rebotica/runs`, and `.rebotica/.gitignore`.
 
-Edit `.atelier.yml` to set:
+Edit `.rebotica.yml` to set:
 
 - project type
 - test and check commands
@@ -96,27 +96,27 @@ Edit `.atelier.yml` to set:
 From a target repository:
 
 ```sh
-atelier install claude
-atelier install codex
-atelier install github
+rbtc install claude
+rbtc install codex
+rbtc install github
 ```
 
 By default this symlinks `.claude/commands` and `.claude/skills` entries back to the central harness. Use `--copy` if a project needs local copies.
 
-`atelier install codex` symlinks canonical Atelier skills into `.agents/skills`.
+`rbtc install codex` symlinks canonical Rebotica skills into `.agents/skills`.
 
 Restricted environments can stage the same skills elsewhere:
 
 ```sh
-atelier install codex --target-dir .atelier/adapters/codex/skills
+rbtc install codex --target-dir .rebotica/adapters/codex/skills
 ```
 
-`atelier install github` copies GitHub repository assets into `.github/`. GitHub assets are copied rather than symlinked so they can be committed and work in GitHub's hosted environment.
+`rbtc install github` copies GitHub repository assets into `.github/`. GitHub assets are copied rather than symlinked so they can be committed and work in GitHub's hosted environment.
 
 ## Review Current Diff
 
 ```sh
-atelier review
+rbtc review
 ```
 
 The command sends git status, git diff stat, git diff, project config, and nearby repo instructions to the configured local model. Output is advisory.
@@ -124,7 +124,7 @@ The command sends git status, git diff stat, git diff, project config, and nearb
 ## Explain Files
 
 ```sh
-atelier explain crates/atelier-cli/src/main.rs
+rbtc explain crates/rebotica-cli/src/main.rs
 ```
 
 This is read-only and logs the run.
@@ -132,7 +132,7 @@ This is read-only and logs the run.
 ## Propose Tests
 
 ```sh
-atelier tests crates/atelier-git/src/lib.rs
+rbtc tests crates/rebotica-git/src/lib.rs
 ```
 
 The worker proposes tests and gaps. It does not write files.
@@ -142,7 +142,7 @@ The worker proposes tests and gaps. It does not write files.
 Patch mode is dry-run-first:
 
 ```sh
-atelier patch .atelier/tasks/example.yml --dry-run
+rbtc patch .rebotica/tasks/example.yml --dry-run
 ```
 
 The worker returns a proposed unified diff. The root coordinator reviews it before any application.

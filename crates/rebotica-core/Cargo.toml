@@ -1,5 +1,5 @@
 [package]
-name = "atelier-provider"
+name = "rebotica-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,5 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-atelier-core.workspace = true
-reqwest.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_yaml.workspace = true

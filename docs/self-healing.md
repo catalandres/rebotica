@@ -1,6 +1,6 @@
 # Self-Healing
 
-Atelier should improve operationally over time without giving local models broader authority.
+Rebotica should improve operationally over time without giving local models broader authority.
 
 The learning loop is:
 
@@ -13,7 +13,7 @@ task -> worker output -> review -> checks -> acceptance/rejection -> retrospecti
 Runs are stored privately under:
 
 ```text
-~/.atelier/runs/
+~/.rebotica/runs/
 ```
 
 Each run may contain:
@@ -37,7 +37,7 @@ Do not store secrets or huge files.
 Create a retrospective:
 
 ```sh
-atelier retro RUN_ID
+rbtc retro RUN_ID
 ```
 
 Ask:
@@ -56,7 +56,7 @@ Ask:
 Model notes live at:
 
 ```text
-~/.atelier/model-scorecards.yml
+~/.rebotica/model-scorecards.yml
 ```
 
 Track what each model is good and weak at. The right long-term routing is empirical, not theoretical.

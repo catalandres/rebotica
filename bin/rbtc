@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REBOTICA_HOME=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+export REBOTICA_HOME
+
+BINARY="$REBOTICA_HOME/target/debug/rbtc"
+
+if [ ! -x "$BINARY" ]; then
+  cargo build --manifest-path "$REBOTICA_HOME/Cargo.toml" -p rebotica-cli >/dev/null
+fi
+
+exec "$BINARY" "$@"

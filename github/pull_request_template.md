@@ -1,6 +1,6 @@
 ## Summary
 
-## Atelier Checks
+## Rebotica Checks
 
 - [ ] `make verify`
 - [ ] Relevant project tests

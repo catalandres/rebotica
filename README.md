@@ -1,6 +1,6 @@
-# Atelier
+# Rebotica
 
-Atelier is a reusable local-model delegation harness for governed collaborative craftsmanship.
+Rebotica is a workshop for local agents: a reusable delegation harness for governed collaborative craftsmanship.
 
 It keeps a root coding agent, such as Claude Code, in charge while bounded workers exposed through OpenAI-compatible providers help with review, explanation, test proposals, documentation cleanup, and small patch drafts.
 
@@ -14,7 +14,7 @@ root coordinator
   -> coordinator review, tests, and acceptance gates
 ```
 
-Atelier is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating bounded work safely.
+Rebotica is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating bounded work safely.
 
 ## Status
 
@@ -23,15 +23,15 @@ This repository starts with a Rust CLI and a project-agnostic file structure. Th
 Implemented in this first version:
 
 - Provider health and smoke checks, with LM Studio as the default local provider.
-- `atelier doctor` for config validation and environment diagnostics.
-- `atelier models` and `atelier providers` for routing visibility.
-- `atelier init` project onboarding.
-- `atelier install claude|codex|github|all` for root-agent and repository assets.
-- `atelier review` for current git diffs.
-- `atelier explain <file...>` for file explanation.
-- `atelier tests <file...>` for test proposals.
-- `atelier patch <task-envelope.yml> --dry-run` guard flow.
-- Run logging under `~/.atelier/runs`.
+- `rbtc doctor` for config validation and environment diagnostics.
+- `rbtc models` and `rbtc providers` for routing visibility.
+- `rbtc init` project onboarding.
+- `rbtc install claude|codex|github|all` for root-agent and repository assets.
+- `rbtc review` for current git diffs.
+- `rbtc explain <file...>` for file explanation.
+- `rbtc tests <file...>` for test proposals.
+- `rbtc patch <task-envelope.yml> --dry-run` guard flow.
+- Run logging under `~/.rebotica/runs`.
 - Prompt contracts, templates, Claude commands, and Claude skills.
 - MCP server source scaffold with narrow tool boundaries.
 
@@ -50,9 +50,9 @@ http://127.0.0.1:1234/v1
 You can override the provider, endpoint, or model:
 
 ```sh
-export ATELIER_PROVIDER=lmstudio
-export ATELIER_BASE_URL=http://127.0.0.1:1234/v1
-export ATELIER_MODEL=qwen-coder
+export REBOTICA_PROVIDER=lmstudio
+export REBOTICA_BASE_URL=http://127.0.0.1:1234/v1
+export REBOTICA_MODEL=qwen-coder
 ```
 
 ## Quick Start
@@ -60,47 +60,47 @@ export ATELIER_MODEL=qwen-coder
 Install from a clone:
 
 ```sh
-git clone https://github.com/catalandres/atelier.git ~/Developer/atelier
-cd ~/Developer/atelier
+git clone https://github.com/catalandres/rebotica.git ~/Developer/rebotica
+cd ~/Developer/rebotica
 scripts/install.sh
 export PATH="$HOME/.local/bin:$PATH"
-atelier doctor
-atelier health
-atelier smoke --model YOUR_MODEL_ID
+rbtc doctor
+rbtc health
+rbtc smoke --model YOUR_MODEL_ID
 ```
 
 From a target project:
 
 ```sh
-atelier init
-atelier install claude
-atelier review
-atelier explain src/main.rs
-atelier tests src/main.rs
-atelier patch .atelier/tasks/example.yml --dry-run
+rbtc init
+rbtc install claude
+rbtc review
+rbtc explain src/main.rs
+rbtc tests src/main.rs
+rbtc patch .rebotica/tasks/example.yml --dry-run
 ```
 
 ## Project Configuration
 
-Each project opts in with `.atelier.yml` or `.atelier/project.yml`.
+Each project opts in with `.rebotica.yml` or `.rebotica/project.yml`.
 
 Start with:
 
 ```sh
-atelier init
+rbtc init
 ```
 
 That creates:
 
 ```text
-.atelier.yml
-.atelier/
+.rebotica.yml
+.rebotica/
   .gitignore
   tasks/
   runs/
 ```
 
-The project config describes commands, forbidden paths, sensitive paths, providers, model aliases, limits, and preferred model routes. See [templates/project.atelier.yml](templates/project.atelier.yml).
+The project config describes commands, forbidden paths, sensitive paths, providers, model aliases, limits, and preferred model routes. See [templates/project.rebotica.yml](templates/project.rebotica.yml).
 
 ## Providers And Model Aliases
 
@@ -128,14 +128,14 @@ models:
 The CLI accepts either aliases or raw values:
 
 ```sh
-atelier smoke --model qwen-worker
-atelier health --provider lmstudio
-atelier health --base-url http://127.0.0.1:1234/v1
+rbtc smoke --model qwen-worker
+rbtc health --provider lmstudio
+rbtc health --base-url http://127.0.0.1:1234/v1
 ```
 
 ## Philosophy
 
-Atelier delegates bounded work, not ambiguity.
+Rebotica delegates bounded work, not ambiguity.
 
 The root coordinator owns judgment: decomposition, scope, worker selection, patch acceptance, test execution, and final responsibility. Local models are useful precisely when their work is constrained, logged, reversible, and reviewed.
 
@@ -162,7 +162,7 @@ bin/                         executable CLI entrypoints
 scripts/                     install and contributor helper scripts
 prompts/system/              role prompts
 prompts/contracts/           worker output contracts
-mcp/local-model-server/      future narrow MCP bridge
+mcp/rebotica-server/          future narrow MCP bridge
 skills/                      canonical root-agent skills
 claude/commands/             reusable Claude Code slash commands
 codex/                       Codex adapter notes
@@ -173,7 +173,7 @@ docs/                        architecture and operating guidance
 
 ## Safety Defaults
 
-Atelier defaults to advisory output. Patch mode starts as dry-run-first and must pass guard checks before a human or root coordinator chooses to apply anything.
+Rebotica defaults to advisory output. Patch mode starts as dry-run-first and must pass guard checks before a human or root coordinator chooses to apply anything.
 
 Local workers must not push, commit, merge, add dependencies, edit forbidden paths, or claim checks passed unless the harness actually ran them.
 

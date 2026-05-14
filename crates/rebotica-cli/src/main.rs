@@ -1,19 +1,19 @@
 use anyhow::{anyhow, Context, Result};
-use atelier_core::{
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use rebotica_core::{
     model_for_mode, parse_allowed_files_from_envelope, parse_forbidden_files_from_envelope,
     resolve_model_alias, LoadedConfig, ProjectConfig, TaskEnvelope, WorkerMode,
 };
-use atelier_provider::{
+use rebotica_provider::{
     ChatMessage, OpenAICompatibleProvider, ProviderOverrides, ProviderSettings,
 };
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 #[derive(Debug, Parser)]
-#[command(name = "atelier", version)]
+#[command(name = "rbtc", version)]
 #[command(about = "A governed local-worker harness for collaborative software craftsmanship.")]
 struct Cli {
     #[command(subcommand)]
@@ -164,7 +164,7 @@ struct RetroArgs {
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("atelier: {error:#}");
+        eprintln!("rbtc: {error:#}");
         std::process::exit(1);
     }
 }
@@ -200,7 +200,7 @@ async fn doctor(args: DoctorArgs) -> Result<()> {
     let harness = harness_root();
     checks.push(Check::from_result(
         "harness.root",
-        "Atelier harness root is discoverable",
+        "Rebotica harness root is discoverable",
         harness.as_ref().ok().map(|path| path.display().to_string()),
         &harness,
     ));
@@ -265,7 +265,7 @@ async fn doctor(args: DoctorArgs) -> Result<()> {
         }
     }
 
-    checks.push(match atelier_git::assert_repository() {
+    checks.push(match rebotica_git::assert_repository() {
         Ok(()) => Check::ok(
             "git.repository",
             "Current directory is a git repository",
@@ -285,7 +285,7 @@ async fn doctor(args: DoctorArgs) -> Result<()> {
     ));
     checks.push(installed_any_check(
         "install.codex",
-        &[".agents/skills", ".atelier/adapters/codex/skills"],
+        &[".agents/skills", ".rebotica/adapters/codex/skills"],
         "Codex/agent skills installed",
     ));
     checks.push(installed_check(
@@ -442,11 +442,11 @@ async fn smoke(args: SmokeArgs) -> Result<()> {
 
 fn init_project(args: InitArgs) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let config_path = cwd.join(".atelier.yml");
-    let state_dir = cwd.join(".atelier");
+    let config_path = cwd.join(".rebotica.yml");
+    let state_dir = cwd.join(".rebotica");
     if config_path.exists() && !args.force {
         return Err(anyhow!(
-            ".atelier.yml already exists. Use --force to overwrite."
+            ".rebotica.yml already exists. Use --force to overwrite."
         ));
     }
 
@@ -457,7 +457,7 @@ fn init_project(args: InitArgs) -> Result<()> {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "project".to_string());
-    let template = read_harness_file("templates/project.atelier.yml")?
+    let template = read_harness_file("templates/project.rebotica.yml")?
         .replace("name: example-project", &format!("name: {project_name}"));
     fs::write(&config_path, template)?;
 
@@ -487,12 +487,12 @@ fn install(args: InstallArgs) -> Result<()> {
 }
 
 async fn review(args: ReviewArgs) -> Result<()> {
-    atelier_git::assert_repository()?;
+    rebotica_git::assert_repository()?;
     let cwd = std::env::current_dir()?;
     let loaded = LoadedConfig::read_from(&cwd)?;
-    let changed_files = atelier_git::changed_files()?;
+    let changed_files = rebotica_git::changed_files()?;
     let envelope = TaskEnvelope::for_config(
-        atelier_runlog::make_id(),
+        rebotica_runlog::make_id(),
         "review",
         args.goal.unwrap_or_else(|| {
             "Review the current git diff for correctness, risk, and missing tests.".to_string()
@@ -514,15 +514,15 @@ async fn review(args: ReviewArgs) -> Result<()> {
         ),
         format!(
             "## Git Status\n{}",
-            fenced(&atelier_git::status_short()?, "text")
+            fenced(&rebotica_git::status_short()?, "text")
         ),
         format!(
             "## Git Diff Stat\n{}",
-            fenced(&atelier_git::diff_stat()?, "text")
+            fenced(&rebotica_git::diff_stat()?, "text")
         ),
         format!(
             "## Git Diff\n{}",
-            fenced(&truncate(&atelier_git::diff()?, 120_000), "diff")
+            fenced(&truncate(&rebotica_git::diff()?, 120_000), "diff")
         ),
     ]
     .join("\n\n");
@@ -535,7 +535,7 @@ async fn review(args: ReviewArgs) -> Result<()> {
         prompt.clone(),
     )
     .await?;
-    atelier_runlog::persist("review", &model, &envelope_yaml, &prompt, &text)?;
+    rebotica_runlog::persist("review", &model, &envelope_yaml, &prompt, &text)?;
     println!("{text}");
     Ok(())
 }
@@ -554,13 +554,13 @@ async fn file_worker(
     envelope_mode: &str,
     output_format: &str,
 ) -> Result<()> {
-    atelier_git::assert_repository()?;
+    rebotica_git::assert_repository()?;
     if args.files.is_empty() {
         return Err(anyhow!("{envelope_mode} requires at least one file."));
     }
     let cwd = std::env::current_dir()?;
     let loaded = LoadedConfig::read_from(&cwd)?;
-    atelier_guard::ensure_allowed(&args.files, &loaded.config.forbidden_paths)?;
+    rebotica_guard::ensure_allowed(&args.files, &loaded.config.forbidden_paths)?;
     let file_blocks = args
         .files
         .iter()
@@ -581,7 +581,7 @@ async fn file_worker(
         _ => "Handle the selected files within the task envelope.",
     };
     let envelope = TaskEnvelope::for_config(
-        atelier_runlog::make_id(),
+        rebotica_runlog::make_id(),
         envelope_mode,
         args.goal.unwrap_or_else(|| default_goal.to_string()),
         &loaded,
@@ -609,13 +609,13 @@ async fn file_worker(
         prompt.clone(),
     )
     .await?;
-    atelier_runlog::persist(envelope_mode, &model, &envelope_yaml, &prompt, &text)?;
+    rebotica_runlog::persist(envelope_mode, &model, &envelope_yaml, &prompt, &text)?;
     println!("{text}");
     Ok(())
 }
 
 async fn propose_patch(args: PatchArgs) -> Result<()> {
-    atelier_git::assert_repository()?;
+    rebotica_git::assert_repository()?;
     let cwd = std::env::current_dir()?;
     let loaded = LoadedConfig::read_from(&cwd)?;
     let envelope_path = cwd.join(&args.envelope);
@@ -624,7 +624,7 @@ async fn propose_patch(args: PatchArgs) -> Result<()> {
     let allowed_files = parse_allowed_files_from_envelope(&envelope_text)?;
     let mut forbidden = loaded.config.forbidden_paths.clone();
     forbidden.extend(parse_forbidden_files_from_envelope(&envelope_text)?);
-    atelier_guard::ensure_allowed(&allowed_files, &forbidden)?;
+    rebotica_guard::ensure_allowed(&allowed_files, &forbidden)?;
     let prompt = [
         read_harness_file("prompts/system/local-worker.md")?,
         read_harness_file("prompts/contracts/patch-only.md")?,
@@ -645,7 +645,7 @@ async fn propose_patch(args: PatchArgs) -> Result<()> {
         prompt.clone(),
     )
     .await?;
-    let run = atelier_runlog::persist("propose_patch", &model, &envelope_text, &prompt, &text)?;
+    let run = rebotica_runlog::persist("propose_patch", &model, &envelope_text, &prompt, &text)?;
     if args.dry_run || !args.apply {
         println!("{text}");
         println!(
@@ -660,17 +660,17 @@ async fn propose_patch(args: PatchArgs) -> Result<()> {
 }
 
 fn guard_diff(args: GuardDiffArgs) -> Result<()> {
-    atelier_git::assert_repository()?;
+    rebotica_git::assert_repository()?;
     let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
-    let changed = atelier_git::changed_files()?;
-    let changed_lines = atelier_git::changed_line_count()?;
+    let changed = rebotica_git::changed_files()?;
+    let changed_lines = rebotica_git::changed_line_count()?;
     let max_files = args
         .max_files
         .unwrap_or(loaded.config.default_limits.max_files_changed);
     let max_lines = args
         .max_lines
         .unwrap_or(loaded.config.default_limits.max_changed_lines);
-    atelier_guard::ensure_allowed(&changed, &loaded.config.forbidden_paths)?;
+    rebotica_guard::ensure_allowed(&changed, &loaded.config.forbidden_paths)?;
     if changed.len() > max_files {
         return Err(anyhow!(
             "changed file count {} exceeds limit {}",
@@ -697,7 +697,7 @@ fn guard_diff(args: GuardDiffArgs) -> Result<()> {
 }
 
 fn retrospective(args: RetroArgs) -> Result<()> {
-    let run_dir = atelier_runlog::runs_root().join(&args.run_id);
+    let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
     if !run_dir.exists() {
         return Err(anyhow!("run not found: {}", args.run_id));
     }
@@ -705,7 +705,7 @@ fn retrospective(args: RetroArgs) -> Result<()> {
     if !output.exists() || args.force {
         fs::write(
             &output,
-            atelier_runlog::retrospective_template(&args.run_id),
+            rebotica_runlog::retrospective_template(&args.run_id),
         )?;
     }
     println!("{}", output.display());
@@ -745,14 +745,14 @@ fn resolve_model(
     model_override: Option<String>,
 ) -> Result<String> {
     if let Some(model) = model_override
-        .or_else(|| std::env::var("ATELIER_MODEL").ok())
+        .or_else(|| std::env::var("REBOTICA_MODEL").ok())
         .filter(|value| !value.is_empty())
     {
         return Ok(resolve_model_alias(&loaded.config, &model));
     }
     model_for_mode(&loaded.config, mode).ok_or_else(|| {
         anyhow!(
-            "missing model. Pass --model, set ATELIER_MODEL, or configure models.default in .atelier.yml."
+            "missing model. Pass --model, set REBOTICA_MODEL, or configure models.default in .rebotica.yml."
         )
     })
 }
@@ -827,7 +827,7 @@ fn validate_config(loaded: &LoadedConfig) -> Vec<Check> {
         checks.push(Check::warn(
             "config.exists",
             "Project config exists",
-            "missing; run atelier init for shared project policy",
+            "missing; run rbtc init for shared project policy",
         ));
     } else {
         checks.push(Check::ok(
@@ -994,7 +994,7 @@ fn install_claude(copy: bool, force: bool) -> Result<()> {
         commands_target.display()
     );
     println!(
-        "{} Atelier skills into {}",
+        "{} Rebotica skills into {}",
         if copy { "copied" } else { "linked" },
         skills_target.display()
     );
@@ -1010,7 +1010,7 @@ fn install_codex(copy: bool, force: bool, target_dir: Option<String>) -> Result<
     ensure_dir(&skills_target)?;
     install_directory_contents(&harness.join("skills"), &skills_target, copy, force)?;
     println!(
-        "{} Atelier skills into {}",
+        "{} Rebotica skills into {}",
         if copy { "copied" } else { "linked" },
         skills_target.display()
     );
@@ -1028,7 +1028,7 @@ fn install_github(force: bool) -> Result<()> {
 }
 
 fn harness_root() -> Result<PathBuf> {
-    if let Ok(explicit) = std::env::var("ATELIER_HOME") {
+    if let Ok(explicit) = std::env::var("REBOTICA_HOME") {
         let root = PathBuf::from(explicit);
         if root.join("prompts/system/local-worker.md").exists() {
             return Ok(root);
@@ -1051,7 +1051,7 @@ fn harness_root() -> Result<PathBuf> {
     }
 
     Err(anyhow!(
-        "could not locate Atelier harness root. Set ATELIER_HOME."
+        "could not locate Rebotica harness root. Set REBOTICA_HOME."
     ))
 }
 

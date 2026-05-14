@@ -1,6 +1,6 @@
 # Providers
 
-Atelier talks to OpenAI-compatible chat completion endpoints. LM Studio is the default local provider, but the config is intentionally provider-oriented so teams can route work to other compatible endpoints.
+Rebotica talks to OpenAI-compatible chat completion endpoints. LM Studio is the default local provider, but the config is intentionally provider-oriented so teams can route work to other compatible endpoints.
 
 This is a useful abstraction. The constraint is that providers should remain narrow: base URL, optional auth, and model routing. Avoid adding provider-specific behavior until a real workflow needs it.
 
@@ -32,22 +32,22 @@ models:
 Use config defaults:
 
 ```sh
-atelier health
-atelier review
+rbtc health
+rbtc review
 ```
 
 Select a provider:
 
 ```sh
-atelier health --provider openai
-ATELIER_PROVIDER=openai atelier review
+rbtc health --provider openai
+REBOTICA_PROVIDER=openai rbtc review
 ```
 
 Override the URL directly:
 
 ```sh
-atelier health --base-url http://127.0.0.1:1234/v1
-ATELIER_BASE_URL=http://127.0.0.1:1234/v1 atelier health
+rbtc health --base-url http://127.0.0.1:1234/v1
+REBOTICA_BASE_URL=http://127.0.0.1:1234/v1 rbtc health
 ```
 
 ## Auth
@@ -62,7 +62,7 @@ providers:
     api_key_env: OPENAI_API_KEY
 ```
 
-By default, Atelier sends:
+By default, Rebotica sends:
 
 ```text
 Authorization: Bearer $OPENAI_API_KEY
@@ -80,7 +80,7 @@ providers:
     api_key_prefix: ""
 ```
 
-Do not put API keys in `.atelier.yml`.
+Do not put API keys in `.rebotica.yml`.
 
 ## Model Routing
 
@@ -100,13 +100,13 @@ models:
 Use a raw model id or alias:
 
 ```sh
-atelier smoke --model worker
-ATELIER_MODEL=worker atelier review
+rbtc smoke --model worker
+REBOTICA_MODEL=worker rbtc review
 ```
 
 ## Design Boundary
 
-Atelier should not become a provider SDK. The first contract is:
+Rebotica should not become a provider SDK. The first contract is:
 
 - OpenAI-compatible `/models`.
 - OpenAI-compatible `/chat/completions`.

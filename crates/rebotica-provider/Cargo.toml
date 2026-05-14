@@ -1,5 +1,5 @@
 [package]
-name = "atelier-guard"
+name = "rebotica-provider"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,3 +7,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+rebotica-core.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
