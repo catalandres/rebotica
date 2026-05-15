@@ -101,7 +101,7 @@ For now, upgrade by pulling a tagged release and reinstalling the shim:
 ```sh
 cd ~/Developer/rebotica
 git fetch --tags
-git checkout v0.1.0
+git checkout v0.2.0
 scripts/install.sh
 ```
 

@@ -61,7 +61,7 @@ Check the public conventions before release:
 2. Run `just release-check`.
 3. Run provider-backed `rbtc health` and `rbtc smoke`.
 4. Update release notes with CLI, config, prompt, safety, and migration changes.
-5. Create an annotated tag, for example `v0.1.0`.
+5. Create an annotated tag, for example `v0.2.0`.
 6. Push the tag.
 7. Create a GitHub release from the tag.
 8. Record the source tarball SHA-256 for the Homebrew formula.
@@ -94,7 +94,7 @@ Use [packaging/homebrew/rebotica.rb.template](../packaging/homebrew/rebotica.rb.
 Formula update flow:
 
 ```sh
-VERSION=v0.1.0
+VERSION=v0.2.0
 curl -L -o rebotica-$VERSION.tar.gz \
   https://github.com/catalandres/rebotica/archive/refs/tags/$VERSION.tar.gz
 shasum -a 256 rebotica-$VERSION.tar.gz
