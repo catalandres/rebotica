@@ -19,7 +19,14 @@ use std::process::Command as ProcessCommand;
 #[command(
     about = "A governed local-model delegation harness for collaborative software craftsmanship."
 )]
-#[command(after_help = "Common workflows:
+#[command(after_help = "Command groups:
+  Setup and status: init, doctor, providers, models, health, smoke, install
+  Delegated work: run review, run explain, run tests, run patch
+  Policy and safety: guard-diff
+  Skills and prompts: skills
+  Feedback and learning: score, scorecards, comment-card, retro
+
+Common workflows:
   rbtc init
   rbtc doctor
   rbtc skills list
