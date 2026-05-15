@@ -9,7 +9,7 @@ The normal path should be:
 ```sh
 rbtc init
 rbtc health
-rbtc review
+rbtc run review
 ```
 
 Good defaults matter more than many switches. Project configuration should capture team policy once, so day-to-day use stays short.

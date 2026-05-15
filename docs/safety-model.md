@@ -14,7 +14,7 @@ Rebotica relies on layered safety rather than model obedience alone.
 
 ## Git Controls
 
-- Review and explain commands are read-only.
+- `rbtc run review` and `rbtc run explain` are read-only.
 - Patch mode is dry-run-first.
 - Worktree isolation is preferred for future patch workers.
 - No auto-push.

@@ -23,8 +23,8 @@ use std::process::Command as ProcessCommand;
   rbtc skills list
   rbtc models --configured-only
   rbtc models configure --detect
-  rbtc review --base main
-  rbtc patch .rebotica/tasks/task.yml --dry-run
+  rbtc run review --base main
+  rbtc run patch .rebotica/tasks/task.yml --dry-run
 
 Provider setup:
   export REBOTICA_BASE_URL=http://127.0.0.1:1234/v1
@@ -52,14 +52,8 @@ enum Command {
     Install(InstallArgs),
     #[command(about = "Inspect canonical and project-local skills.")]
     Skills(SkillsArgs),
-    #[command(about = "Ask a bounded worker to review a selected git diff.")]
-    Review(ReviewArgs),
-    #[command(about = "Ask a bounded worker to explain selected files.")]
-    Explain(FileWorkerArgs),
-    #[command(about = "Ask a bounded worker to propose focused tests for selected files.")]
-    Tests(FileWorkerArgs),
-    #[command(about = "Ask a bounded worker for a dry-run unified diff from a task envelope.")]
-    Patch(PatchArgs),
+    #[command(about = "Run delegated local-model work modes.")]
+    Run(RunArgs),
     #[command(about = "Check a selected git diff against forbidden paths and size limits.")]
     GuardDiff(GuardDiffArgs),
     #[command(about = "Record Prime feedback about a worker/model run.")]
@@ -222,6 +216,24 @@ struct SkillsShowArgs {
         help = "Skill id, or canonical:<id> / project:<id> when disambiguating."
     )]
     skill: String,
+}
+
+#[derive(Debug, Parser)]
+struct RunArgs {
+    #[command(subcommand)]
+    mode: RunMode,
+}
+
+#[derive(Debug, Subcommand)]
+enum RunMode {
+    #[command(about = "Ask a bounded worker to review a selected git diff.")]
+    Review(ReviewArgs),
+    #[command(about = "Ask a bounded worker to explain selected files.")]
+    Explain(FileWorkerArgs),
+    #[command(about = "Ask a bounded worker to propose focused tests for selected files.")]
+    Tests(FileWorkerArgs),
+    #[command(about = "Ask a bounded worker for a dry-run unified diff from a task envelope.")]
+    Patch(PatchArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -548,15 +560,21 @@ async fn run() -> Result<()> {
         Command::Init(args) => init_project(args),
         Command::Install(args) => install(args),
         Command::Skills(args) => skills(args),
-        Command::Review(args) => review(args).await,
-        Command::Explain(args) => explain(args).await,
-        Command::Tests(args) => propose_tests(args).await,
-        Command::Patch(args) => propose_patch(args).await,
+        Command::Run(args) => run_mode(args).await,
         Command::GuardDiff(args) => guard_diff(args),
         Command::Score(args) => score(args),
         Command::Scorecards => scorecards(),
         Command::CommentCard(args) => comment_card(args),
         Command::Retro(args) => retrospective(args),
+    }
+}
+
+async fn run_mode(args: RunArgs) -> Result<()> {
+    match args.mode {
+        RunMode::Review(args) => review(args).await,
+        RunMode::Explain(args) => explain(args).await,
+        RunMode::Tests(args) => propose_tests(args).await,
+        RunMode::Patch(args) => propose_patch(args).await,
     }
 }
 
@@ -3009,6 +3027,64 @@ mod tests {
     }
 
     #[test]
+    fn delegated_modes_parse_under_run() {
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(args),
+        })) = Cli::try_parse_from(["rbtc", "run", "review", "--base", "main"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected run review command");
+        };
+        assert_eq!(args.base, Some("main".to_string()));
+
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Explain(args),
+        })) = Cli::try_parse_from(["rbtc", "run", "explain", "src/main.rs"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected run explain command");
+        };
+        assert_eq!(args.files, vec!["src/main.rs"]);
+
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Tests(args),
+        })) = Cli::try_parse_from(["rbtc", "run", "tests", "src/main.rs"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected run tests command");
+        };
+        assert_eq!(args.files, vec!["src/main.rs"]);
+
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Patch(args),
+        })) = Cli::try_parse_from([
+            "rbtc",
+            "run",
+            "patch",
+            ".rebotica/tasks/task.yml",
+            "--dry-run",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("expected run patch command");
+        };
+        assert_eq!(args.envelope, ".rebotica/tasks/task.yml");
+        assert!(args.dry_run);
+    }
+
+    #[test]
+    fn delegated_modes_are_not_top_level_subcommands() {
+        for mode in ["review", "explain", "tests", "patch"] {
+            let error = Cli::try_parse_from(["rbtc", mode]).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidSubcommand);
+        }
+    }
+
+    #[test]
     fn models_configure_detect_command_parses() {
         let Some(Command::Models(args)) = Cli::try_parse_from([
             "rbtc",
@@ -3084,46 +3160,52 @@ mod tests {
 
     #[test]
     fn review_diff_source_flags_parse_public_variants() {
-        let Some(Command::Review(default_args)) =
-            Cli::try_parse_from(["rbtc", "review"]).unwrap().command
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(default_args),
+        })) = Cli::try_parse_from(["rbtc", "run", "review"])
+            .unwrap()
+            .command
         else {
-            panic!("expected review command");
+            panic!("expected run review command");
         };
         assert_eq!(
             review_diff_source(&default_args).unwrap(),
             rebotica_git::DiffSource::WorkingTree
         );
 
-        let Some(Command::Review(base_args)) =
-            Cli::try_parse_from(["rbtc", "review", "--base", "origin/main"])
-                .unwrap()
-                .command
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(base_args),
+        })) = Cli::try_parse_from(["rbtc", "run", "review", "--base", "origin/main"])
+            .unwrap()
+            .command
         else {
-            panic!("expected review command");
+            panic!("expected run review command");
         };
         assert_eq!(
             review_diff_source(&base_args).unwrap(),
             rebotica_git::DiffSource::Base("origin/main".to_string())
         );
 
-        let Some(Command::Review(range_args)) =
-            Cli::try_parse_from(["rbtc", "review", "--range", "main..HEAD"])
-                .unwrap()
-                .command
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(range_args),
+        })) = Cli::try_parse_from(["rbtc", "run", "review", "--range", "main..HEAD"])
+            .unwrap()
+            .command
         else {
-            panic!("expected review command");
+            panic!("expected run review command");
         };
         assert_eq!(
             review_diff_source(&range_args).unwrap(),
             rebotica_git::DiffSource::Range("main..HEAD".to_string())
         );
 
-        let Some(Command::Review(cached_args)) =
-            Cli::try_parse_from(["rbtc", "review", "--cached"])
-                .unwrap()
-                .command
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(cached_args),
+        })) = Cli::try_parse_from(["rbtc", "run", "review", "--cached"])
+            .unwrap()
+            .command
         else {
-            panic!("expected review command");
+            panic!("expected run review command");
         };
         assert_eq!(
             review_diff_source(&cached_args).unwrap(),
@@ -3133,12 +3215,21 @@ mod tests {
 
     #[test]
     fn review_limit_overrides_parse() {
-        let Some(Command::Review(args)) =
-            Cli::try_parse_from(["rbtc", "review", "--max-files", "6", "--max-lines", "450"])
-                .unwrap()
-                .command
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(args),
+        })) = Cli::try_parse_from([
+            "rbtc",
+            "run",
+            "review",
+            "--max-files",
+            "6",
+            "--max-lines",
+            "450",
+        ])
+        .unwrap()
+        .command
         else {
-            panic!("expected review command");
+            panic!("expected run review command");
         };
 
         assert_eq!(args.max_files, Some(6));
@@ -3147,12 +3238,15 @@ mod tests {
 
     #[test]
     fn review_accepts_repeated_model_flags_for_side_by_side_runs() {
-        let Some(Command::Review(args)) =
-            Cli::try_parse_from(["rbtc", "review", "--model", "gemma", "--model", "qwen"])
-                .unwrap()
-                .command
+        let Some(Command::Run(RunArgs {
+            mode: RunMode::Review(args),
+        })) = Cli::try_parse_from([
+            "rbtc", "run", "review", "--model", "gemma", "--model", "qwen",
+        ])
+        .unwrap()
+        .command
         else {
-            panic!("expected review command");
+            panic!("expected run review command");
         };
 
         assert_eq!(args.models, vec!["gemma", "qwen"]);
@@ -3164,9 +3258,16 @@ mod tests {
 
     #[test]
     fn review_diff_source_flags_conflict() {
-        let error =
-            Cli::try_parse_from(["rbtc", "review", "--base", "main", "--range", "main..HEAD"])
-                .unwrap_err();
+        let error = Cli::try_parse_from([
+            "rbtc",
+            "run",
+            "review",
+            "--base",
+            "main",
+            "--range",
+            "main..HEAD",
+        ])
+        .unwrap_err();
 
         assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
     }

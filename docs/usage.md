@@ -144,7 +144,7 @@ rbtc install codex --target-dir .rebotica/adapters/codex/skills
 ## Review A Git Diff
 
 ```sh
-rbtc review
+rbtc run review
 ```
 
 By default this reviews unstaged working-tree changes from `git diff`.
@@ -152,33 +152,33 @@ By default this reviews unstaged working-tree changes from `git diff`.
 For committed feature branch work, review the branch against a base ref:
 
 ```sh
-rbtc review --base main
-rbtc review --base origin/main
+rbtc run review --base main
+rbtc run review --base origin/main
 ```
 
 Use an explicit range when the coordinator has already chosen exact refs:
 
 ```sh
-rbtc review --range main..HEAD
-rbtc review --range main...HEAD
+rbtc run review --range main..HEAD
+rbtc run review --range main...HEAD
 ```
 
 Use staged changes when reviewing an index-only patch:
 
 ```sh
-rbtc review --cached
+rbtc run review --cached
 ```
 
 If a legitimate review is larger than the project default limits, override the limits recorded in the task envelope:
 
 ```sh
-rbtc review --base origin/main --max-files 10 --max-lines 600
+rbtc run review --base origin/main --max-files 10 --max-lines 600
 ```
 
 Run multiple models side by side by repeating `--model`:
 
 ```sh
-rbtc review --base origin/main --model gemma-review --model qwen-code
+rbtc run review --base origin/main --model gemma-review --model qwen-code
 ```
 
 Each model gets the same rendered prompt and its own run log.
@@ -192,8 +192,8 @@ Prime can attach canonical or project-local skills to a worker invocation:
 ```sh
 rbtc skills list
 rbtc skills show local-model-delegation
-rbtc review --base origin/main --skill local-model-delegation
-rbtc tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
+rbtc run review --base origin/main --skill local-model-delegation
+rbtc run tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
 ```
 
 Project-local skills live under `.rebotica/skills/`:
@@ -206,8 +206,8 @@ Project-local skills live under `.rebotica/skills/`:
 If a project skill intentionally shares an id with a canonical skill, disambiguate the source:
 
 ```sh
-rbtc review --base origin/main --skill canonical:local-model-delegation
-rbtc review --base origin/main --skill project:frontend-review
+rbtc run review --base origin/main --skill canonical:local-model-delegation
+rbtc run review --base origin/main --skill project:frontend-review
 ```
 
 Selected skills are included in the prompt and logged as `skills.json` under the run directory. They are context only; they cannot override Rebotica contracts, forbidden paths, sensitive paths, or task limits.
@@ -284,8 +284,8 @@ Use local review as a cheap first pass before a stronger Prime-agent review:
 ```sh
 rbtc health
 rbtc guard-diff --base origin/main
-rbtc review --base origin/main --model LOCAL_MODEL_ID --skill local-model-delegation
-rbtc tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
+rbtc run review --base origin/main --model LOCAL_MODEL_ID --skill local-model-delegation
+rbtc run tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
 ```
 
 Treat local-model output as triage. It can catch obvious missing tests, dangling references, and documentation drift, but Prime still owns final review and acceptance.
@@ -306,7 +306,7 @@ This command does not call a model. It reports JSON and is suitable for local pr
 ## Explain Files
 
 ```sh
-rbtc explain crates/rebotica-cli/src/main.rs
+rbtc run explain crates/rebotica-cli/src/main.rs
 ```
 
 This is read-only and logs the run.
@@ -314,7 +314,7 @@ This is read-only and logs the run.
 ## Propose Tests
 
 ```sh
-rbtc tests crates/rebotica-git/src/lib.rs
+rbtc run tests crates/rebotica-git/src/lib.rs
 ```
 
 The worker proposes tests and gaps. It does not write files.
@@ -324,7 +324,7 @@ The worker proposes tests and gaps. It does not write files.
 Patch mode is dry-run-first:
 
 ```sh
-rbtc patch .rebotica/tasks/example.yml --dry-run
+rbtc run patch .rebotica/tasks/example.yml --dry-run
 ```
 
 The worker returns a proposed unified diff. Prime reviews it before any application.
