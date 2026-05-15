@@ -83,7 +83,7 @@ fn top_level_help_guides_common_workflows() {
     assert!(stdout.contains("run"));
     assert!(stdout.contains("Run delegated local-model work modes."));
     assert!(stdout.contains("score"));
-    assert!(stdout.contains("Record Prime feedback about a worker/model run."));
+    assert!(stdout.contains("Record Prime feedback about a model run."));
     assert!(stdout.contains("scorecards"));
     assert!(stdout.contains("Show accumulated model scorecard summaries."));
     assert!(stdout.contains("comment-card"));
@@ -104,15 +104,13 @@ fn run_help_lists_delegated_modes() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("review"));
-    assert!(stdout.contains("Ask a bounded worker to review a selected git diff."));
+    assert!(stdout.contains("Ask a local model to review a selected git diff."));
     assert!(stdout.contains("explain"));
-    assert!(stdout.contains("Ask a bounded worker to explain selected files."));
+    assert!(stdout.contains("Ask a local model to explain selected files."));
     assert!(stdout.contains("tests"));
-    assert!(stdout.contains("Ask a bounded worker to propose focused tests for selected files."));
+    assert!(stdout.contains("Ask a local model to propose focused tests for selected files."));
     assert!(stdout.contains("patch"));
-    assert!(
-        stdout.contains("Ask a bounded worker for a dry-run unified diff from a task envelope.")
-    );
+    assert!(stdout.contains("Ask a local model for a dry-run unified diff from a task envelope."));
 }
 
 #[test]
@@ -124,7 +122,7 @@ fn run_patch_help_explains_inputs_and_safety() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Ask a bounded worker for a dry-run unified diff"));
+    assert!(stdout.contains("Ask a local model for a dry-run unified diff"));
     assert!(stdout.contains("TASK_ENVELOPE"));
     assert!(stdout.contains("Print the proposed diff and run metadata without applying anything."));
     assert!(stdout.contains("currently rejected in v0.1"));
@@ -139,7 +137,7 @@ fn run_review_help_explains_diff_sources() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Ask a bounded worker to review a selected git diff"));
+    assert!(stdout.contains("Ask a local model to review a selected git diff"));
     assert!(stdout.contains("Repeat to run multiple models side by side."));
     assert!(stdout.contains("--base <REF>"));
     assert!(stdout.contains("--range <REV_RANGE>"));
@@ -176,7 +174,7 @@ fn subcommand_help_explains_score_feedback() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Record Prime feedback about a worker/model run."));
+    assert!(stdout.contains("Record Prime feedback about a model run."));
     assert!(stdout.contains("--rating <1-5>"));
     assert!(stdout.contains("--accepted"));
     assert!(stdout.contains("--rejected"));
@@ -308,11 +306,11 @@ fn models_configured_only_resolves_aliases_without_provider_request() {
         temp.path().join(".rebotica.yml"),
         r#"
 models:
-  default: local-worker
-  review: review-worker
+  default: local-model
+  review: review-model
   aliases:
-    local-worker: raw-local-model
-    review-worker: raw-review-model
+    local-model: raw-local-model
+    review-model: raw-review-model
 "#,
     )
     .unwrap();
@@ -325,8 +323,8 @@ models:
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("default: local-worker -> raw-local-model"));
-    assert!(stdout.contains("review: review-worker -> raw-review-model"));
+    assert!(stdout.contains("default: local-model -> raw-local-model"));
+    assert!(stdout.contains("review: review-model -> raw-review-model"));
     assert!(stdout.contains("Aliases:"));
 }
 
@@ -357,7 +355,7 @@ models:
             "--model",
             "raw-local-model",
             "--alias",
-            "local-worker",
+            "local-model",
         ],
     );
 
@@ -368,9 +366,9 @@ models:
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("configured model routes"));
-    assert!(stdout.contains("alias: local-worker -> raw-local-model"));
+    assert!(stdout.contains("alias: local-model -> raw-local-model"));
     let config = fs::read_to_string(temp.path().join(".rebotica.yml")).unwrap();
-    assert!(config.contains("default: local-worker"));
-    assert!(config.contains("review: local-worker"));
-    assert!(config.contains("local-worker: raw-local-model"));
+    assert!(config.contains("default: local-model"));
+    assert!(config.contains("review: local-model"));
+    assert!(config.contains("local-model: raw-local-model"));
 }

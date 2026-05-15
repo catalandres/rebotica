@@ -1,5 +1,5 @@
 class Rebotica < Formula
-  desc "Governed local-worker harness for root coding agents"
+  desc "Governed local-model delegation harness for root coding agents"
   homepage "https://github.com/catalandres/rebotica"
   url "https://github.com/catalandres/rebotica/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "REPLACE_WITH_RELEASE_TARBALL_SHA256"

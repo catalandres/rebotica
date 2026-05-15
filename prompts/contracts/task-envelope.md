@@ -1,6 +1,6 @@
 # Task Envelope Contract
 
-Every local worker invocation must include an explicit task envelope.
+Every delegated run must include an explicit task envelope.
 
 ```yaml
 task_id: local-001
@@ -18,4 +18,4 @@ acceptance_criteria: []
 risk_level: low | medium | high
 ```
 
-The envelope is a boundary, not a suggestion. If the task cannot be done inside the envelope, the worker must return `REFUSAL_WITH_REASON`.
+The envelope is a boundary, not a suggestion. If the task cannot be done inside the envelope, the local model must return `REFUSAL_WITH_REASON`.

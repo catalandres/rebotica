@@ -400,16 +400,16 @@ mod tests {
     #[test]
     fn model_for_mode_resolves_aliases_and_falls_back_to_default_route() {
         let mut config = ProjectConfig::default();
-        config.models.default = "default-worker".to_string();
-        config.models.review = "review-worker".to_string();
-        config.models.aliases.insert(
-            "default-worker".to_string(),
-            "raw-default-model".to_string(),
-        );
+        config.models.default = "default-model".to_string();
+        config.models.review = "review-model".to_string();
         config
             .models
             .aliases
-            .insert("review-worker".to_string(), "raw-review-model".to_string());
+            .insert("default-model".to_string(), "raw-default-model".to_string());
+        config
+            .models
+            .aliases
+            .insert("review-model".to_string(), "raw-review-model".to_string());
 
         assert_eq!(
             model_for_mode(&config, WorkerMode::Review),

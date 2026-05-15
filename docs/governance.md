@@ -45,7 +45,7 @@ Secrets must stay in environment variables, not config files.
 
 ## Safety Changes
 
-Changes that broaden what local workers can do require explicit review:
+Changes that broaden what local models can do require explicit review:
 
 - patch application
 - filesystem mutation

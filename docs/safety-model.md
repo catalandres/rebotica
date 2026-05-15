@@ -16,7 +16,7 @@ Rebotica relies on layered safety rather than model obedience alone.
 
 - `rbtc run review` and `rbtc run explain` are read-only.
 - Patch mode is dry-run-first.
-- Worktree isolation is preferred for future patch workers.
+- Worktree isolation is preferred for future patch drafting.
 - No auto-push.
 - No auto-merge.
 - No auto-commit by default.
@@ -30,11 +30,11 @@ Prime runs configured project commands:
 - lint
 - format checks
 
-The local worker must not claim those commands passed unless the harness actually ran them.
+The local model must not claim those commands passed unless the harness actually ran them.
 
 ## Output Controls
 
-Worker output must separate:
+Model output must separate:
 
 - analysis
 - assumptions

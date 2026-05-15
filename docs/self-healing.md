@@ -5,7 +5,7 @@ Rebotica should improve operationally over time without giving local models broa
 The learning loop is:
 
 ```text
-task -> worker output -> review -> checks -> acceptance/rejection -> retrospective -> prompt/config/routing update
+task -> model output -> review -> checks -> acceptance/rejection -> retrospective -> prompt/config/routing update
 ```
 
 ## Run Storage

@@ -1,5 +1,5 @@
 name: Rebotica Comment Card
-description: Product feedback about Rebotica from Prime, a human, or a worker run.
+description: Product feedback about Rebotica from Prime, a human, or a model run.
 title: "[Comment Card]: "
 labels:
   - comment-card
@@ -31,7 +31,7 @@ body:
       options:
         - prime
         - human
-        - worker
+        - model
     validations:
       required: true
   - type: input

@@ -16,7 +16,9 @@ use std::process::Command as ProcessCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "rbtc", version)]
-#[command(about = "A governed local-worker harness for collaborative software craftsmanship.")]
+#[command(
+    about = "A governed local-model delegation harness for collaborative software craftsmanship."
+)]
 #[command(after_help = "Common workflows:
   rbtc init
   rbtc doctor
@@ -56,7 +58,7 @@ enum Command {
     Run(RunArgs),
     #[command(about = "Check a selected git diff against forbidden paths and size limits.")]
     GuardDiff(GuardDiffArgs),
-    #[command(about = "Record Prime feedback about a worker/model run.")]
+    #[command(about = "Record Prime feedback about a model run.")]
     Score(ScoreArgs),
     #[command(about = "Show accumulated model scorecard summaries.")]
     Scorecards,
@@ -151,7 +153,7 @@ struct ModelConfigureArgs {
     detect: bool,
     #[arg(
         long,
-        default_value = "local-worker",
+        default_value = "local-model",
         help = "Alias to write under models.aliases and use for empty routes."
     )]
     alias: String,
@@ -199,7 +201,7 @@ struct SkillsArgs {
 enum SkillsCommand {
     #[command(about = "List available canonical and project-local skills.")]
     List(SkillsListArgs),
-    #[command(about = "Print a skill exactly as it would be attached to a worker.")]
+    #[command(about = "Print a skill exactly as it would be attached to a delegated run.")]
     Show(SkillsShowArgs),
 }
 
@@ -226,13 +228,13 @@ struct RunArgs {
 
 #[derive(Debug, Subcommand)]
 enum RunMode {
-    #[command(about = "Ask a bounded worker to review a selected git diff.")]
+    #[command(about = "Ask a local model to review a selected git diff.")]
     Review(ReviewArgs),
-    #[command(about = "Ask a bounded worker to explain selected files.")]
+    #[command(about = "Ask a local model to explain selected files.")]
     Explain(FileWorkerArgs),
-    #[command(about = "Ask a bounded worker to propose focused tests for selected files.")]
+    #[command(about = "Ask a local model to propose focused tests for selected files.")]
     Tests(FileWorkerArgs),
-    #[command(about = "Ask a bounded worker for a dry-run unified diff from a task envelope.")]
+    #[command(about = "Ask a local model for a dry-run unified diff from a task envelope.")]
     Patch(PatchArgs),
 }
 
@@ -289,7 +291,7 @@ struct ReviewArgs {
     #[arg(
         long = "skill",
         value_name = "SKILL",
-        help = "Attach a canonical or project-local skill as worker context."
+        help = "Attach a canonical or project-local skill as delegated run context."
     )]
     skills: Vec<String>,
     #[arg(long, help = "Optional review goal to put in the task envelope.")]
@@ -312,14 +314,14 @@ struct ReviewArgs {
 struct FileWorkerArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long, help = "Model alias or raw provider model id for this worker.")]
+    #[arg(long, help = "Model alias or raw provider model id for this run.")]
     model: Option<String>,
     #[arg(long, help = "Optional goal to put in the task envelope.")]
     goal: Option<String>,
     #[arg(
         long = "skill",
         value_name = "SKILL",
-        help = "Attach a canonical or project-local skill as worker context."
+        help = "Attach a canonical or project-local skill as delegated run context."
     )]
     skills: Vec<String>,
     #[arg(
@@ -330,7 +332,7 @@ struct FileWorkerArgs {
     temperature: f64,
     #[arg(
         value_name = "FILE",
-        help = "Project file to include in the worker context."
+        help = "Project file to include in the model context."
     )]
     files: Vec<String>,
 }
@@ -353,7 +355,7 @@ struct PatchArgs {
     #[arg(
         long = "skill",
         value_name = "SKILL",
-        help = "Attach a canonical or project-local skill as worker context."
+        help = "Attach a canonical or project-local skill as delegated run context."
     )]
     skills: Vec<String>,
     #[arg(
@@ -402,7 +404,7 @@ struct GuardDiffArgs {
 struct ScoreArgs {
     #[arg(value_name = "RUN_ID", help = "Run id under ~/.rebotica/runs.")]
     run_id: String,
-    #[arg(long, value_name = "1-5", help = "Prime rating for the worker output.")]
+    #[arg(long, value_name = "1-5", help = "Prime rating for the model output.")]
     rating: Option<u8>,
     #[arg(
         long,
@@ -467,7 +469,7 @@ struct CommentCardNewArgs {
     #[arg(
         long,
         default_value = "prime",
-        help = "Feedback source, for example prime, human, or worker."
+        help = "Feedback source, for example prime, human, or model."
     )]
     source: String,
     #[arg(long, help = "Comment card title.")]
@@ -1175,7 +1177,7 @@ async fn file_worker(
     let envelope_yaml = envelope.to_yaml()?;
     let system_prompt = match mode {
         WorkerMode::Tests => "prompts/system/local-test-writer.md",
-        _ => "prompts/system/local-worker.md",
+        _ => "prompts/system/delegated-run.md",
     };
     let mut prompt_parts = vec![
         read_harness_file(system_prompt)?,
@@ -1215,7 +1217,7 @@ async fn propose_patch(args: PatchArgs) -> Result<()> {
     forbidden.extend(parse_forbidden_files_from_envelope(&envelope_text)?);
     rebotica_guard::ensure_allowed(&allowed_files, &forbidden)?;
     let mut prompt_parts = vec![
-        read_harness_file("prompts/system/local-worker.md")?,
+        read_harness_file("prompts/system/delegated-run.md")?,
         read_harness_file("prompts/contracts/patch-only.md")?,
         format!("## Task Envelope\n{envelope_text}"),
         format!("## Project Config\n{}", loaded.raw_or_placeholder()),
@@ -2053,7 +2055,7 @@ async fn run_worker(
             vec![
                 ChatMessage::new(
                     "system",
-                    "You are a bounded local worker. Follow the supplied contract exactly.",
+                    "You are a local model operating under a scoped task contract. Follow the supplied contract exactly.",
                 ),
                 ChatMessage::new("user", prompt),
             ],
@@ -2685,21 +2687,21 @@ fn install_github(force: bool) -> Result<()> {
 fn harness_root() -> Result<PathBuf> {
     if let Ok(explicit) = std::env::var("REBOTICA_HOME") {
         let root = PathBuf::from(explicit);
-        if root.join("prompts/system/local-worker.md").exists() {
+        if root.join("prompts/system/delegated-run.md").exists() {
             return Ok(root);
         }
     }
 
     let cwd = std::env::current_dir()?;
     for candidate in cwd.ancestors() {
-        if candidate.join("prompts/system/local-worker.md").exists() {
+        if candidate.join("prompts/system/delegated-run.md").exists() {
             return Ok(candidate.to_path_buf());
         }
     }
 
     if let Ok(exe) = std::env::current_exe() {
         for candidate in exe.ancestors() {
-            if candidate.join("prompts/system/local-worker.md").exists() {
+            if candidate.join("prompts/system/delegated-run.md").exists() {
                 return Ok(candidate.to_path_buf());
             }
         }
@@ -3092,7 +3094,7 @@ mod tests {
             "configure",
             "--detect",
             "--alias",
-            "worker",
+            "model",
         ])
         .unwrap()
         .command
@@ -3104,7 +3106,7 @@ mod tests {
         };
 
         assert!(configure.detect);
-        assert_eq!(configure.alias, "worker");
+        assert_eq!(configure.alias, "model");
         assert_eq!(configure.model, None);
     }
 
@@ -3141,7 +3143,7 @@ mod tests {
         )
         .unwrap();
 
-        let update = write_model_routes(&config_path, "local-worker", "raw-model-id", false)
+        let update = write_model_routes(&config_path, "local-model", "raw-model-id", false)
             .expect("model routes should be written");
 
         assert_eq!(
@@ -3150,10 +3152,10 @@ mod tests {
         );
         assert_eq!(update.routes_kept, vec!["review"]);
         let loaded = LoadedConfig::read_from(temp.path()).unwrap();
-        assert_eq!(loaded.config.models.default, "local-worker");
+        assert_eq!(loaded.config.models.default, "local-model");
         assert_eq!(loaded.config.models.review, "existing-reviewer");
         assert_eq!(
-            loaded.config.models.aliases.get("local-worker"),
+            loaded.config.models.aliases.get("local-model"),
             Some(&"raw-model-id".to_string())
         );
     }

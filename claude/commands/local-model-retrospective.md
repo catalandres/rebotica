@@ -1,6 +1,6 @@
-# /local-worker-retrospective
+# /local-model-retrospective
 
-Create a retrospective for an Rebotica run.
+Create a retrospective for a Rebotica run.
 
 Expected argument:
 

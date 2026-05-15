@@ -1,15 +1,15 @@
 # Local Model Delegation
 
-Use this skill when Prime wants help from local models through Rebotica for bounded review, explanation, test proposal, documentation cleanup, or small patch drafting.
+Use this skill when Prime wants help from local models through Rebotica for scoped review, explanation, test proposal, documentation cleanup, or small patch drafting.
 
-Rebotica is advisory by default. Local workers do not own architecture, commits, pushes, merges, or final acceptance.
+Rebotica is advisory by default. Local models do not own architecture, commits, pushes, merges, or final acceptance.
 
 ## Allowed Work
 
 - Review a selected git diff.
 - Explain selected files.
 - Propose missing tests.
-- Draft small bounded patches.
+- Draft small scoped patches.
 - Identify documentation drift.
 - Perform mechanical cleanup inside an explicit allowlist.
 
@@ -55,4 +55,4 @@ If `rbtc` is not on `PATH`, use the harness wrapper path directly.
 
 ## Acceptance
 
-Never accept local worker output solely because it was generated. Prime must review the content, verify scope, and run appropriate checks.
+Never accept local-model output solely because it was generated. Prime must review the content, verify scope, and run appropriate checks.

@@ -8,14 +8,14 @@ Prime owns:
 - scope definition
 - skill selection
 - task envelope creation
-- worker selection
+- model selection
 - model invocation
 - patch review
 - tests and checks
 - acceptance or rejection
 - project memory updates
 
-The local worker may return:
+The local model may return:
 
 - analysis
 - review findings
@@ -31,7 +31,7 @@ The local worker may return:
 2. Select a narrow task.
 3. Create or generate a task envelope.
 4. Validate file scope.
-5. Invoke the local worker.
+5. Invoke the local model.
 6. Treat output as advisory.
 7. Apply patches only after review.
 8. Run project checks.

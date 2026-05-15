@@ -2,9 +2,9 @@
 
 Mode: `review`
 
-The worker may inspect supplied context and return advisory analysis.
+The local model may inspect supplied context and return advisory analysis.
 
-The worker must not:
+The local model must not:
 
 - Propose a full patch unless asked for a patch mode.
 - Ask to edit files.

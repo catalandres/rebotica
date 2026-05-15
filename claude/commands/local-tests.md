@@ -14,4 +14,4 @@ Run:
 rbtc run tests path/to/file
 ```
 
-The local worker should propose tests, not edit files. Prime decides whether to implement them.
+The local model should propose tests, not edit files. Prime decides whether to implement them.
