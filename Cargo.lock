@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "rebotica-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "rebotica-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -846,28 +846,28 @@ dependencies = [
 
 [[package]]
 name = "rebotica-git"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "rebotica-guard"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "rebotica-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "rebotica-provider"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rebotica-core",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "rebotica-runlog"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",

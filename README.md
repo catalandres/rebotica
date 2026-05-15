@@ -16,6 +16,12 @@ Prime
 
 Rebotica is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating scoped work safely.
 
+## Name
+
+*Rebotica* (reh-boh-TEE-kah · /reβoˈtika/) is Spanish for the *trastienda* — the back room — of a *farmacia* (pharmacy). It is where the pharmacist works behind the counter, out of public view: weighing ingredients on careful scales, compounding preparations from recorded recipes, consulting with apprentices over the open formulary. The customer at the front of the shop never sees the work; they trust the labeled bottle because the pharmacist's discipline — recipe, measure, log, signature — makes that trust safe. In the Spanish literary tradition the rebotica is also where the *tertulia* gathers: the back-room conversation among trusted hands, where ideas are weighed before they reach the street.
+
+A fitting name for a workshop where local agents do scoped work behind Prime: task envelopes for the recipe, guards for the scale, run logs for the formulary, and Prime signing off on what reaches the user.
+
 ## Status
 
 This repository starts with a Rust CLI and a project-agnostic file structure. The shell bridge comes first; MCP and Aider-style worktree patching are intentionally secondary.
