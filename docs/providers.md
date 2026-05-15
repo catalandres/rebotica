@@ -33,14 +33,14 @@ Use config defaults:
 
 ```sh
 rbtc health
-rbtc review
+rbtc run review
 ```
 
 Select a provider:
 
 ```sh
 rbtc health --provider openai
-REBOTICA_PROVIDER=openai rbtc review
+REBOTICA_PROVIDER=openai rbtc run review
 ```
 
 Override the URL directly:
@@ -101,7 +101,7 @@ Use a raw model id or alias:
 
 ```sh
 rbtc smoke --model worker
-REBOTICA_MODEL=worker rbtc review
+REBOTICA_MODEL=worker rbtc run review
 ```
 
 ## Route Setup

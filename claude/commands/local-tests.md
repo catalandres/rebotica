@@ -11,7 +11,7 @@ path/to/file [path/to/another-file]
 Run:
 
 ```sh
-rbtc tests path/to/file
+rbtc run tests path/to/file
 ```
 
 The local worker should propose tests, not edit files. Prime decides whether to implement them.

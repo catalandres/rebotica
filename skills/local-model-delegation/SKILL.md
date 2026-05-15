@@ -42,11 +42,11 @@ Rebotica is advisory by default. Local workers do not own architecture, commits,
 Use:
 
 ```sh
-rbtc review
-rbtc review --base origin/main
-rbtc explain path/to/file
-rbtc tests path/to/file
-rbtc patch .rebotica/tasks/task.yml --dry-run
+rbtc run review
+rbtc run review --base origin/main
+rbtc run explain path/to/file
+rbtc run tests path/to/file
+rbtc run patch .rebotica/tasks/task.yml --dry-run
 rbtc guard-diff
 rbtc guard-diff --base origin/main
 ```

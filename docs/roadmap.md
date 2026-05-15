@@ -38,7 +38,7 @@ Expected pattern:
 ```sh
 git worktree add ../project-rebotica-worker-1 -b ai/rebotica-worker-1 main
 cd ../project-rebotica-worker-1
-rbtc patch .rebotica/tasks/task.yml --dry-run
+rbtc run patch .rebotica/tasks/task.yml --dry-run
 ```
 
 Prime reviews the diff and runs checks.

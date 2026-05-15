@@ -28,13 +28,13 @@ Implemented in this first version:
 - `rbtc init` project onboarding.
 - `rbtc install claude|codex|github|all` for Prime-agent and repository assets.
 - `rbtc skills list|show` for inspecting canonical and project-local skills.
-- `rbtc review` for working-tree, staged, base-ref, or explicit-range git diffs.
+- `rbtc run review` for working-tree, staged, base-ref, or explicit-range git diffs.
 - `rbtc guard-diff` for forbidden-path and size-limit checks on selected git diffs.
 - `rbtc score` for Prime feedback on worker/model performance.
 - `rbtc comment-card` for local-first product feedback about Rebotica.
-- `rbtc explain <file...>` for file explanation.
-- `rbtc tests <file...>` for test proposals.
-- `rbtc patch <task-envelope.yml> --dry-run` guard flow.
+- `rbtc run explain <file...>` for file explanation.
+- `rbtc run tests <file...>` for test proposals.
+- `rbtc run patch <task-envelope.yml> --dry-run` guard flow.
 - Run logging under `~/.rebotica/runs`.
 - Prompt contracts, templates, Prime-agent adapter assets, and Prime-selected skill context.
 - MCP server source scaffold with narrow tool boundaries.
@@ -81,14 +81,14 @@ rbtc models configure --detect
 rbtc install claude
 rbtc skills list
 rbtc guard-diff --base main
-rbtc review --base main --skill local-model-delegation
-rbtc review --base main --model gemma-review --model qwen-code
+rbtc run review --base main --skill local-model-delegation
+rbtc run review --base main --model gemma-review --model qwen-code
 rbtc score RUN_ID --rating 4 --accepted --label useful-review
 rbtc scorecards
 rbtc comment-card new --from-run RUN_ID --kind ux --area review --source prime --title "review feedback"
-rbtc explain src/main.rs
-rbtc tests src/main.rs
-rbtc patch .rebotica/tasks/example.yml --dry-run
+rbtc run explain src/main.rs
+rbtc run tests src/main.rs
+rbtc run patch .rebotica/tasks/example.yml --dry-run
 ```
 
 ## Project Configuration

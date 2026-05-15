@@ -6,7 +6,7 @@ Review the current git diff with Rebotica.
 2. Run:
 
 ```sh
-rbtc review
+rbtc run review
 ```
 
 3. Treat the output as advisory.

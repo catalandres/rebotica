@@ -80,6 +80,8 @@ fn top_level_help_guides_common_workflows() {
     assert!(stdout.contains("Show configured model routes"));
     assert!(stdout.contains("skills"));
     assert!(stdout.contains("Inspect canonical and project-local skills."));
+    assert!(stdout.contains("run"));
+    assert!(stdout.contains("Run delegated local-model work modes."));
     assert!(stdout.contains("score"));
     assert!(stdout.contains("Record Prime feedback about a worker/model run."));
     assert!(stdout.contains("scorecards"));
@@ -87,16 +89,38 @@ fn top_level_help_guides_common_workflows() {
     assert!(stdout.contains("comment-card"));
     assert!(stdout.contains("Create and manage product feedback comment cards."));
     assert!(stdout.contains("Common workflows:"));
-    assert!(stdout.contains("rbtc patch .rebotica/tasks/task.yml --dry-run"));
+    assert!(stdout.contains("rbtc run review --base main"));
+    assert!(stdout.contains("rbtc run patch .rebotica/tasks/task.yml --dry-run"));
     assert!(stdout.contains("Provider setup:"));
 }
 
 #[test]
-fn subcommand_help_explains_patch_inputs_and_safety() {
+fn run_help_lists_delegated_modes() {
     let output = rbtc()
-        .args(["help", "patch"])
+        .args(["help", "run"])
         .output()
-        .expect("rbtc help patch should run");
+        .expect("rbtc help run should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("review"));
+    assert!(stdout.contains("Ask a bounded worker to review a selected git diff."));
+    assert!(stdout.contains("explain"));
+    assert!(stdout.contains("Ask a bounded worker to explain selected files."));
+    assert!(stdout.contains("tests"));
+    assert!(stdout.contains("Ask a bounded worker to propose focused tests for selected files."));
+    assert!(stdout.contains("patch"));
+    assert!(
+        stdout.contains("Ask a bounded worker for a dry-run unified diff from a task envelope.")
+    );
+}
+
+#[test]
+fn run_patch_help_explains_inputs_and_safety() {
+    let output = rbtc()
+        .args(["help", "run", "patch"])
+        .output()
+        .expect("rbtc help run patch should run");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -107,11 +131,11 @@ fn subcommand_help_explains_patch_inputs_and_safety() {
 }
 
 #[test]
-fn subcommand_help_explains_review_diff_sources() {
+fn run_review_help_explains_diff_sources() {
     let output = rbtc()
-        .args(["help", "review"])
+        .args(["help", "run", "review"])
         .output()
-        .expect("rbtc help review should run");
+        .expect("rbtc help run review should run");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);

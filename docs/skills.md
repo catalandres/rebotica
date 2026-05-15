@@ -33,8 +33,8 @@ Claude also gets slash-command files from `claude/commands`. Codex gets the same
 Prime can attach skills to individual local-worker invocations:
 
 ```sh
-rbtc review --base origin/main --skill local-model-delegation
-rbtc tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
+rbtc run review --base origin/main --skill local-model-delegation
+rbtc run tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
 ```
 
 Selected skills are included in the worker prompt after the Rebotica system prompt and task envelope, and after the mode contract or project config when that command includes them. They are context only. They cannot override forbidden paths, sensitive paths, task limits, or any Rebotica safety contract.
