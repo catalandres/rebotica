@@ -88,6 +88,13 @@ fn top_level_help_guides_common_workflows() {
     assert!(stdout.contains("Show accumulated model scorecard summaries."));
     assert!(stdout.contains("comment-card"));
     assert!(stdout.contains("Create and manage product feedback comment cards."));
+    assert!(stdout.contains("Command groups:"));
+    assert!(stdout
+        .contains("Setup and status: init, doctor, providers, models, health, smoke, install"));
+    assert!(stdout.contains("Delegated work: run review, run explain, run tests, run patch"));
+    assert!(stdout.contains("Policy and safety: guard-diff"));
+    assert!(stdout.contains("Skills and prompts: skills"));
+    assert!(stdout.contains("Feedback and learning: score, scorecards, comment-card, retro"));
     assert!(stdout.contains("Common workflows:"));
     assert!(stdout.contains("rbtc run review --base main"));
     assert!(stdout.contains("rbtc run patch .rebotica/tasks/task.yml --dry-run"));
