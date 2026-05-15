@@ -2,9 +2,9 @@
 
 Mode: `propose_patch`
 
-The worker may propose a unified diff only when the task envelope permits patch output.
+The local model may propose a unified diff only when the task envelope permits patch output.
 
-The worker must:
+The local model must:
 
 - Modify only `allowed_files`.
 - Avoid `forbidden_files`.

@@ -1,8 +1,8 @@
-# Local Worker Self-Healing
+# Delegated Run Self-Healing
 
-Use this skill after Rebotica local-worker runs when Prime wants to improve prompts, task envelopes, project config, model routing, or scoring rules based on observed outcomes.
+Use this skill after Rebotica delegated runs when Prime wants to improve prompts, task envelopes, project config, model routing, or scoring rules based on observed outcomes.
 
-This skill improves the harness. It does not grant local workers broader authority.
+This skill improves the harness. It does not grant local models broader authority.
 
 ## Inputs To Inspect
 
@@ -29,7 +29,7 @@ Review:
 - What surprised us?
 - Was context missing?
 - Was the task too broad?
-- Did the worker violate scope?
+- Did the local model violate scope?
 - Did checks catch the issue?
 - Should project config change?
 - Should a prompt change?

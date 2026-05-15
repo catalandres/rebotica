@@ -1,4 +1,4 @@
-# /local-worker-health
+# /local-model-health
 
 Check whether the configured provider is reachable through Rebotica.
 

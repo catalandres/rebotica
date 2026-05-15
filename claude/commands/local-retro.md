@@ -1,6 +1,6 @@
 # /local-retro
 
-Alias for `/local-worker-retrospective`.
+Alias for `/local-model-retrospective`.
 
 Run:
 
@@ -8,4 +8,4 @@ Run:
 rbtc retro RUN_ID
 ```
 
-Use the local-worker self-healing skill to decide whether the run suggests changes to prompts, templates, model routing, or project policy.
+Use the delegated-run self-healing skill to decide whether the run suggests changes to prompts, templates, model routing, or project policy.

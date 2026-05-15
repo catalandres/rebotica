@@ -8,7 +8,7 @@ The near-term model is file-based:
 skills/
   local-model-delegation/
     SKILL.md
-  local-worker-self-healing/
+  delegated-run-self-healing/
     SKILL.md
 ```
 
@@ -28,16 +28,16 @@ rbtc install codex
 
 Claude also gets slash-command files from `claude/commands`. Codex gets the same canonical skills under `.agents/skills`.
 
-## Worker Context
+## Delegated Run Context
 
-Prime can attach skills to individual local-worker invocations:
+Prime can attach skills to individual delegated runs:
 
 ```sh
 rbtc run review --base origin/main --skill local-model-delegation
 rbtc run tests crates/rebotica-cli/src/main.rs --skill local-model-delegation
 ```
 
-Selected skills are included in the worker prompt after the Rebotica system prompt and task envelope, and after the mode contract or project config when that command includes them. They are context only. They cannot override forbidden paths, sensitive paths, task limits, or any Rebotica safety contract.
+Selected skills are included in the model prompt after the Rebotica system prompt and task envelope, and after the mode contract or project config when that command includes them. They are context only. They cannot override forbidden paths, sensitive paths, task limits, or any Rebotica safety contract.
 
 Project-local skills can live under:
 
@@ -53,14 +53,14 @@ rbtc skills show canonical:local-model-delegation
 rbtc skills show project:frontend-review
 ```
 
-Run logs record selected skill metadata in `skills.json`, while `prompt.md` preserves the exact rendered skill text sent to the worker. After the run, Prime can score model performance with `rbtc score` or create a Rebotica product feedback comment card with `rbtc comment-card`.
+Run logs record selected skill metadata in `skills.json`, while `prompt.md` preserves the exact rendered skill text sent to the local model. After the run, Prime can score model performance with `rbtc score` or create a Rebotica product feedback comment card with `rbtc comment-card`.
 
 ## Why Multiplex Skills
 
 The useful invariant is that policy lives once:
 
-- bounded delegation rules
-- allowed and forbidden worker behavior
+- scoped delegation rules
+- allowed and forbidden model behavior
 - retrospective/self-healing workflow
 - patch acceptance rules
 - provider and model routing vocabulary

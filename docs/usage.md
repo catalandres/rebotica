@@ -187,7 +187,7 @@ The command sends git status, diff source, diff stat, diff, project config, and 
 
 ## Attach Skills
 
-Prime can attach canonical or project-local skills to a worker invocation:
+Prime can attach canonical or project-local skills to a delegated run:
 
 ```sh
 rbtc skills list
@@ -212,7 +212,7 @@ rbtc run review --base origin/main --skill project:frontend-review
 
 Selected skills are included in the prompt and logged as `skills.json` under the run directory. They are context only; they cannot override Rebotica contracts, forbidden paths, sensitive paths, or task limits.
 
-## Score Worker Output
+## Score Model Output
 
 After a model-backed run, Rebotica prints the run id to stderr and suggests follow-up commands for Prime.
 
@@ -317,7 +317,7 @@ This is read-only and logs the run.
 rbtc run tests crates/rebotica-git/src/lib.rs
 ```
 
-The worker proposes tests and gaps. It does not write files.
+The local model proposes tests and gaps. It does not write files.
 
 ## Patch Drafting
 
@@ -327,4 +327,4 @@ Patch mode is dry-run-first:
 rbtc run patch .rebotica/tasks/example.yml --dry-run
 ```
 
-The worker returns a proposed unified diff. Prime reviews it before any application.
+The local model returns a proposed unified diff. Prime reviews it before any application.

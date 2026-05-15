@@ -23,21 +23,21 @@ Current focus:
 Next:
 
 - Stronger task-envelope validation.
-- Better parsing of worker output.
+- Better parsing of model output.
 - Patch diff validation before display.
 - Optional configured test/check execution.
 - Project-level context packing rules.
 - Provider fixture tests for auth, aliases, and error handling.
 
-## Phase 3: Worktree Patch Workers
+## Phase 3: Worktree Patch Drafting
 
 Patch drafting should happen in isolated git worktrees before direct application is considered.
 
 Expected pattern:
 
 ```sh
-git worktree add ../project-rebotica-worker-1 -b ai/rebotica-worker-1 main
-cd ../project-rebotica-worker-1
+git worktree add ../project-rebotica-draft-1 -b ai/rebotica-draft-1 main
+cd ../project-rebotica-draft-1
 rbtc run patch .rebotica/tasks/task.yml --dry-run
 ```
 
@@ -83,7 +83,7 @@ Make canonical Rebotica skills installable across Prime-agent adapters:
 
 - Autonomous coding swarms.
 - Automatic merge systems.
-- Persistent background workers.
+- Persistent background agents.
 - Broad filesystem mutation.
 - Project-specific hardcoding.
 - Complex UI.

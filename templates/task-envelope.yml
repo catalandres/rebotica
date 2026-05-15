@@ -10,5 +10,5 @@ max_changed_lines: 300
 max_files_changed: 5
 output_format: json
 acceptance_criteria:
-  - Root coordinator reviews output before acceptance.
+  - Prime reviews output before acceptance.
 risk_level: low

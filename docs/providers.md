@@ -88,20 +88,20 @@ Model aliases keep long model ids out of commands and task envelopes:
 
 ```yaml
 models:
-  default: worker
+  default: local-model
   review: reviewer
   tests: test-writer
   patch: patcher
   aliases:
-    worker: actual-model-id
+    local-model: actual-model-id
     reviewer: actual-review-model-id
 ```
 
 Use a raw model id or alias:
 
 ```sh
-rbtc smoke --model worker
-REBOTICA_MODEL=worker rbtc run review
+rbtc smoke --model local-model
+REBOTICA_MODEL=local-model rbtc run review
 ```
 
 ## Route Setup
@@ -109,10 +109,10 @@ REBOTICA_MODEL=worker rbtc run review
 `rbtc init` creates the config and leaves model routes empty so onboarding works offline and never mutates provider settings unexpectedly. Configure routes through an explicit follow-up command:
 
 ```sh
-rbtc models configure --model ACTUAL_MODEL_ID --alias local-worker
+rbtc models configure --model ACTUAL_MODEL_ID --alias local-model
 ```
 
-That writes `models.aliases.local-worker` and fills only empty `default`, `review`, `explain`, `tests`, and `patch` routes. Existing routes are left alone unless you pass `--force`.
+That writes `models.aliases.local-model` and fills only empty `default`, `review`, `explain`, `tests`, and `patch` routes. Existing routes are left alone unless you pass `--force`.
 
 When LM Studio or another OpenAI-compatible provider is reachable, you can opt into detection:
 

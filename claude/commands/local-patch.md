@@ -1,6 +1,6 @@
 # /local-patch
 
-Ask Rebotica for a bounded patch draft from a task envelope.
+Ask Rebotica for a scoped patch draft from a task envelope.
 
 Expected argument:
 

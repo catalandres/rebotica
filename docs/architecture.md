@@ -5,7 +5,7 @@ Rebotica has three layers:
 ```text
 Prime
   -> task envelope and policy
-  -> local worker interface
+  -> local-model interface
   -> OpenAI-compatible endpoint
   -> advisory output or proposed diff
   -> Prime review and verification
@@ -24,7 +24,7 @@ Important boundaries:
 - `rebotica-runlog`: private run storage and scorecard bootstrap.
 - `rebotica-cli`: user-facing command behavior.
 - `rebotica-mcp`: future narrow MCP server.
-- `skills/`: canonical skills that can be inspected, installed into Prime-agent adapters, or attached as worker context.
+- `skills/`: canonical skills that can be inspected, installed into Prime-agent adapters, or attached as delegated run context.
 
 ## Shell Bridge First
 
@@ -60,7 +60,7 @@ MCP comes later, after the shell bridge proves which tools are actually worth ex
 
 ## Narrow Future MCP Tools
 
-The MCP server should expose only bounded tools:
+The MCP server should expose only scoped tools:
 
 - `local_model.review_diff`
 - `local_model.explain_files`

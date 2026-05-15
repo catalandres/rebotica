@@ -2,19 +2,19 @@
 
 Rebotica is a workshop for local agents: a reusable delegation harness for governed collaborative craftsmanship.
 
-It keeps Prime, the coordinating agent such as Claude Code, in charge while bounded workers exposed through OpenAI-compatible providers help with review, explanation, test proposals, documentation cleanup, and small patch drafts.
+It keeps Prime, the coordinating agent such as Claude Code, in charge while local models exposed through OpenAI-compatible providers help with review, explanation, test proposals, documentation cleanup, and small patch drafts.
 
 The core idea is simple:
 
 ```text
 Prime
   -> explicit task envelope
-  -> narrow local worker contract
-  -> advisory output or bounded diff
+  -> scoped local-model contract
+  -> advisory output or scoped diff
   -> Prime review, tests, and acceptance gates
 ```
 
-Rebotica is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating bounded work safely.
+Rebotica is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating scoped work safely.
 
 ## Status
 
@@ -30,7 +30,7 @@ Implemented in this first version:
 - `rbtc skills list|show` for inspecting canonical and project-local skills.
 - `rbtc run review` for working-tree, staged, base-ref, or explicit-range git diffs.
 - `rbtc guard-diff` for forbidden-path and size-limit checks on selected git diffs.
-- `rbtc score` for Prime feedback on worker/model performance.
+- `rbtc score` for Prime feedback on model-run performance.
 - `rbtc comment-card` for local-first product feedback about Rebotica.
 - `rbtc run explain <file...>` for file explanation.
 - `rbtc run tests <file...>` for test proposals.
@@ -131,28 +131,28 @@ providers:
     api_key_env: OPENAI_API_KEY
 
 models:
-  default: qwen-worker
-  review: qwen-worker
-  tests: qwen-worker
+  default: qwen-model
+  review: qwen-model
+  tests: qwen-model
   aliases:
-    qwen-worker: huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx
+    qwen-model: huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx
 ```
 
 The CLI accepts either aliases or raw values:
 
 ```sh
 rbtc models configure --detect
-rbtc models configure --model huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx --alias qwen-worker
-rbtc smoke --model qwen-worker
+rbtc models configure --model huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx --alias qwen-model
+rbtc smoke --model qwen-model
 rbtc health --provider lmstudio
 rbtc health --base-url http://127.0.0.1:1234/v1
 ```
 
 ## Philosophy
 
-Rebotica delegates bounded work, not ambiguity.
+Rebotica delegates scoped work, not ambiguity.
 
-Prime owns judgment: decomposition, scope, worker selection, patch acceptance, test execution, and final responsibility. Local models are useful precisely when their work is constrained, logged, reversible, and reviewed.
+Prime owns judgment: decomposition, scope, model selection, patch acceptance, test execution, and final responsibility. Local models are useful precisely when their work is constrained, logged, reversible, and reviewed.
 
 Read more in [docs/philosophy.md](docs/philosophy.md).
 
@@ -177,7 +177,7 @@ crates/                      Rust workspace crates
 bin/                         executable CLI entrypoints
 scripts/                     install and contributor helper scripts
 prompts/system/              role prompts
-prompts/contracts/           worker output contracts
+prompts/contracts/           local-model output contracts
 mcp/rebotica-server/          future narrow MCP bridge
 skills/                      canonical Prime-agent skills
 claude/commands/             reusable Claude Code slash commands
@@ -191,7 +191,7 @@ docs/                        architecture and operating guidance
 
 Rebotica defaults to advisory output. Patch mode starts as dry-run-first and must pass guard checks before a human or Prime chooses to apply anything.
 
-Local workers must not push, commit, merge, add dependencies, edit forbidden paths, or claim checks passed unless the harness actually ran them.
+Local models must not push, commit, merge, add dependencies, edit forbidden paths, or claim checks passed unless the harness actually ran them.
 
 ## License
 
