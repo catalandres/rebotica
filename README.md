@@ -1,20 +1,8 @@
 # Rebotica
 
-Rebotica is a workshop for local agents: a reusable delegation harness for governed collaborative craftsmanship.
+A Rust CLI (`rbtc`) that runs local-model work as a subprocess of a coordinating agent.
 
-It keeps Prime, the coordinating agent such as Claude Code, in charge while local models exposed through OpenAI-compatible providers help with review, explanation, test proposals, documentation cleanup, and small patch drafts.
-
-The core idea is simple:
-
-```text
-Prime
-  -> explicit task envelope
-  -> scoped local-model contract
-  -> advisory output or scoped diff
-  -> Prime review, tests, and acceptance gates
-```
-
-Rebotica is not an autonomous coding swarm. It is a set of contracts, prompts, scripts, guards, logs, and docs for delegating scoped work safely.
+A coordinating agent — call it Prime — drives the work: it decides scope, picks the model, reads the output, runs the tests, decides what to keep. `rbtc` is the subprocess Prime calls when it wants a local model to do something specific: check a provider, list configured skills, guard a diff, score a run, draft a patch. Output is a structured envelope on stdout; prose stays on stderr.
 
 ## Name
 
@@ -24,30 +12,50 @@ A fitting name for a workshop where local agents do scoped work behind Prime: ta
 
 ## Status
 
-This repository starts with a Rust CLI and a project-agnostic file structure. The shell bridge comes first; MCP and Aider-style worktree patching are intentionally secondary.
+Version `0.2.0`. Single-user project; the only consumer is the author's coordinating agent.
 
-Implemented in this first version:
+What's stable:
 
-- Setup and status: `rbtc init`, `rbtc doctor`, `rbtc providers`, `rbtc models`, `rbtc models configure`, `rbtc health`, `rbtc smoke`, and `rbtc install claude|codex|github|all`.
-- Delegated work: `rbtc run review`, `rbtc run explain <file...>`, `rbtc run tests <file...>`, and `rbtc run patch <task-envelope.yml> --dry-run`.
-- Policy and safety: `rbtc guard-diff` for forbidden-path and size-limit checks on selected git diffs.
-- Skills and prompts: `rbtc skills list|show`, prompt contracts, templates, Prime-agent adapter assets, and Prime-selected skill context.
-- Feedback and learning: `rbtc score`, `rbtc scorecards`, `rbtc comment-card`, run logging under `~/.rebotica/runs`, and local-first product feedback about Rebotica.
-- Future bridge: MCP server source scaffold with narrow tool boundaries.
+- The v1 JSON envelope contract for every state command (`doctor`, `providers`, `models`, `models configure`, `health`, `smoke`, `init`, `install`, `skills list/show`, `guard-diff`, `score`, `scorecards`, `comment-card *`, `retro`).
+- The typed `ErrorCode` taxonomy and exit-code mapping.
+- The CLI surface for the commands above (flags, env vars, output channels).
+
+What's in flux:
+
+- `run review`, `run explain`, `run tests`, `run patch` are being rebuilt as a plugin host under epic [#5](https://github.com/catalandres/rebotica/issues/5). They exist today but their output contract is going to change. Do not parse their stdout from another tool yet.
 
 ## Requirements
 
-- Current stable Rust toolchain with Cargo.
+- Rust toolchain (current stable) with Cargo.
 - Git.
-- LM Studio or another OpenAI-compatible provider when invoking model-backed commands.
+- An OpenAI-compatible provider when invoking model-backed commands. LM Studio works out of the box at `http://127.0.0.1:1234/v1`.
 
-Default local provider endpoint:
+## Install
+
+Clone and run the install script:
 
 ```sh
-http://127.0.0.1:1234/v1
+git clone https://github.com/catalandres/rebotica.git
+cd rebotica
+scripts/install.sh
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-You can override the provider, endpoint, or model:
+The script installs `rbtc` into `$HOME/.local/bin`. Alternatively, install with Cargo directly:
+
+```sh
+cargo install --path crates/rebotica-cli
+```
+
+Then check that the environment is healthy:
+
+```sh
+rbtc doctor
+```
+
+## Provider setup
+
+Configure the provider via environment variables:
 
 ```sh
 export REBOTICA_PROVIDER=lmstudio
@@ -55,139 +63,54 @@ export REBOTICA_BASE_URL=http://127.0.0.1:1234/v1
 export REBOTICA_MODEL=qwen-coder
 ```
 
-## Quick Start
+Or set them in `.rebotica.yml` after running `rbtc init` in a target project. See [docs/usage.md](docs/usage.md) for the full setup walkthrough.
 
-Install from a clone:
+## Output contract (one screen)
 
-```sh
-git clone https://github.com/catalandres/rebotica.git ~/Developer/rebotica
-cd ~/Developer/rebotica
-scripts/install.sh
-export PATH="$HOME/.local/bin:$PATH"
-rbtc doctor
-rbtc health
-rbtc smoke --model YOUR_MODEL_ID
-```
-
-From a target project:
+Every state command emits a v1 envelope on stdout when `--json` or `--quiet` is set. Prose goes to stderr. The exit code derives from `error.code`, not from matching message text.
 
 ```sh
-rbtc init
-rbtc models configure --detect
-rbtc install claude
-rbtc skills list
-rbtc guard-diff --base main
-rbtc run review --base main --skill local-model-delegation
-rbtc run review --base main --model gemma-review --model qwen-code
-rbtc score RUN_ID --rating 4 --accepted --label useful-review
-rbtc scorecards
-rbtc comment-card new --from-run RUN_ID --kind ux --area review --source prime --title "review feedback"
-rbtc run explain src/main.rs
-rbtc run tests src/main.rs
-rbtc run patch .rebotica/tasks/example.yml --dry-run
+$ rbtc doctor --json
+{
+  "rebotica": "v1",
+  "kind": "doctor",
+  "ok": true,
+  "command": "doctor",
+  "data": { /* ... per-kind payload ... */ },
+  "error": null,
+  "run_id": null,
+  "started_at": "2026-05-15T22:00:00Z",
+  "duration_ms": 42
+}
 ```
 
-## Project Configuration
+`--quiet` (or `REBOTICA_QUIET=1`) implies `--json` and guarantees exactly one envelope on stdout with nothing on stderr. Use it from a parent process.
 
-Each project opts in with `.rebotica.yml` or `.rebotica/project.yml`.
+See [docs/output-contract.md](docs/output-contract.md) for the full envelope spec, [docs/usage.md](docs/usage.md) for the practical guide, and [docs/exit-codes.md](docs/exit-codes.md) for the `error.code` table.
 
-Start with:
+## Command groups
 
-```sh
-rbtc init
-```
+- **Setup and status:** `init`, `doctor`, `providers`, `models`, `models configure`, `health`, `smoke`, `install`.
+- **Skills:** `skills list`, `skills show`.
+- **Policy and safety:** `guard-diff`.
+- **Feedback and learning:** `score`, `scorecards`, `comment-card *`, `retro`.
+- **Delegated work** (output contract in flux, see above): `run review`, `run explain`, `run tests`, `run patch`.
 
-That creates:
+## State on disk
 
-```text
-.rebotica.yml
-.rebotica/
-  .gitignore
-  tasks/
-  runs/
-```
-
-The project config describes commands, forbidden paths, sensitive paths, providers, model aliases, limits, and preferred model routes. See [templates/project.rebotica.yml](templates/project.rebotica.yml).
-
-`rbtc init` intentionally leaves model routes empty. Use `rbtc models configure --detect` when a provider such as LM Studio is running with exactly one loaded model, or use `rbtc models configure --model MODEL_ID` to configure the route manually while offline.
-
-## Providers And Model Aliases
-
-Aliases are useful because local model ids can be long and because different projects may route work to different OpenAI-compatible providers.
-
-```yaml
-providers:
-  default: lmstudio
-  lmstudio:
-    kind: openai-compatible
-    base_url: http://127.0.0.1:1234/v1
-  openai:
-    kind: openai-compatible
-    base_url: https://api.openai.com/v1
-    api_key_env: OPENAI_API_KEY
-
-models:
-  default: qwen-model
-  review: qwen-model
-  tests: qwen-model
-  aliases:
-    qwen-model: huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx
-```
-
-The CLI accepts either aliases or raw values:
-
-```sh
-rbtc models configure --detect
-rbtc models configure --model huihui-qwen3.6-35b-a3b-claude-4.7-opus-abliterated-mlx --alias qwen-model
-rbtc smoke --model qwen-model
-rbtc health --provider lmstudio
-rbtc health --base-url http://127.0.0.1:1234/v1
-```
-
-## Philosophy
-
-Rebotica delegates scoped work, not ambiguity.
-
-Prime owns judgment: decomposition, scope, model selection, patch acceptance, test execution, and final responsibility. Local models are useful precisely when their work is constrained, logged, reversible, and reviewed.
-
-Read more in [docs/philosophy.md](docs/philosophy.md).
+- Per-project: `.rebotica.yml` and `.rebotica/` (created by `rbtc init`). Contains task envelopes, run logs, optional project-local skills.
+- Global: `~/.rebotica/`. Contains run logs (`runs/`), model scorecards, and pending/submitted/dismissed comment cards.
 
 ## Documentation
 
-- [Usage](docs/usage.md)
-- [Installation](docs/install.md)
-- [Architecture](docs/architecture.md)
-- [Providers](docs/providers.md)
-- [Skills](docs/skills.md)
-- [Operating Model](docs/operating-model.md)
-- [Governance](docs/governance.md)
-- [Safety Model](docs/safety-model.md)
-- [Self-Healing](docs/self-healing.md)
-- [Roadmap](docs/roadmap.md)
-- [Release](docs/release.md)
+- [Usage](docs/usage.md) — practical guide and integration walkthrough.
+- [Output contract](docs/output-contract.md) — v1 envelope wire format.
+- [Exit codes](docs/exit-codes.md) — `error.code` table and per-code `error.details` shapes.
+- [Release](docs/release.md) — release notes and tag checklist.
 
-## Repository Layout
+The following pre-date the v1 envelope work and may not reflect current behavior. Treat as background:
 
-```text
-crates/                      Rust workspace crates
-bin/                         executable CLI entrypoints
-scripts/                     install and contributor helper scripts
-prompts/system/              role prompts
-prompts/contracts/           local-model output contracts
-mcp/rebotica-server/          future narrow MCP bridge
-skills/                      canonical Prime-agent skills
-claude/commands/             reusable Claude Code slash commands
-codex/                       Codex adapter notes
-github/                      GitHub repository assets
-templates/                   project, task, and scorecard templates
-docs/                        architecture and operating guidance
-```
-
-## Safety Defaults
-
-Rebotica defaults to advisory output. Patch mode starts as dry-run-first and must pass guard checks before a human or Prime chooses to apply anything.
-
-Local models must not push, commit, merge, add dependencies, edit forbidden paths, or claim checks passed unless the harness actually ran them.
+- [Architecture](docs/architecture.md), [Providers](docs/providers.md), [Skills](docs/skills.md), [Operating Model](docs/operating-model.md), [Governance](docs/governance.md), [Safety Model](docs/safety-model.md), [Self-Healing](docs/self-healing.md), [Roadmap](docs/roadmap.md), [Philosophy](docs/philosophy.md), [Install](docs/install.md).
 
 ## License
 
