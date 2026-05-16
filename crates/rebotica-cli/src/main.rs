@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
-use rebotica_core::output::{Envelope, EnvelopeError, ErrorCode, Reporter, ReporterMode};
+use rebotica_core::output::{
+    EmptyData, Envelope, EnvelopeError, ErrorCode, Reporter, ReporterMode,
+};
 use rebotica_core::{
     model_for_mode, parse_allowed_files_from_envelope, parse_forbidden_files_from_envelope,
     resolve_model_alias, LoadedConfig, ProjectConfig, TaskEnvelope, WorkerMode,
@@ -12,6 +14,7 @@ use rebotica_provider::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -548,11 +551,31 @@ struct RetroArgs {
 async fn main() {
     let started_at = Utc::now();
     let args: Vec<OsString> = std::env::args_os().collect();
-    let reporter_mode = reporter_mode_from_args_and_env(&args);
 
-    let cli = match Cli::try_parse_from(args) {
-        Ok(cli) => cli,
+    match Cli::try_parse_from(args.clone()) {
+        Ok(cli) => {
+            let reporter_mode = reporter_mode_from_cli_and_env(&cli);
+            let command_path = command_path(&cli);
+            match run(cli, reporter_mode, started_at).await {
+                Ok(code) => std::process::exit(code),
+                Err(error) => {
+                    if reporter_mode == ReporterMode::Human {
+                        eprintln!("rbtc: {error:#}");
+                    } else {
+                        emit_top_level_error(
+                            reporter_mode,
+                            &command_path,
+                            started_at,
+                            ErrorCode::Internal,
+                            format!("{error:#}"),
+                        );
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
         Err(error) => {
+            let reporter_mode = reporter_mode_from_args_and_env_for_parse_error(&args);
             use clap::error::ErrorKind;
             // Help and version are not errors. clap prints them via error.exit()
             // and returns exit code 0. Bypass the JSON-envelope path so we don't
@@ -577,25 +600,6 @@ async fn main() {
             );
             std::process::exit(error.exit_code());
         }
-    };
-    let command_path = command_path(&cli);
-
-    match run(cli, reporter_mode, started_at).await {
-        Ok(code) => std::process::exit(code),
-        Err(error) => {
-            if reporter_mode == ReporterMode::Human {
-                eprintln!("rbtc: {error:#}");
-            } else {
-                emit_top_level_error(
-                    reporter_mode,
-                    &command_path,
-                    started_at,
-                    ErrorCode::Internal,
-                    format!("{error:#}"),
-                );
-            }
-            std::process::exit(1);
-        }
     }
 }
 
@@ -618,13 +622,26 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
     match command {
         Command::Doctor(args) => doctor(args, reporter_mode, started_at).await,
         Command::Models(args) => {
-            models(args, reporter_mode.is_json()).await?;
-            Ok(0)
+            let (kind, command) = if matches!(&args.command, Some(ModelsCommand::Configure(_))) {
+                ("models.configure", "models configure")
+            } else {
+                ("models", "models")
+            };
+            handle_migrated_result(
+                models(args, reporter_mode, started_at).await,
+                reporter_mode,
+                started_at,
+                kind,
+                command,
+            )
         }
-        Command::Providers(args) => {
-            providers(args, reporter_mode.is_json())?;
-            Ok(0)
-        }
+        Command::Providers(args) => handle_migrated_result(
+            providers(args, reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "providers",
+            "providers",
+        ),
         Command::Health(args) => {
             health(args).await?;
             Ok(0)
@@ -633,17 +650,32 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             smoke(args).await?;
             Ok(0)
         }
-        Command::Init(args) => {
-            init_project(args)?;
-            Ok(0)
-        }
-        Command::Install(args) => {
-            install(args)?;
-            Ok(0)
-        }
+        Command::Init(args) => handle_migrated_result(
+            init_project(args, reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "init",
+            "init",
+        ),
+        Command::Install(args) => handle_migrated_result(
+            install(args, reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "install",
+            "install",
+        ),
         Command::Skills(args) => {
-            skills(args, reporter_mode.is_json())?;
-            Ok(0)
+            let (kind, command) = match &args.command {
+                SkillsCommand::List(_) => ("skills.list", "skills list"),
+                SkillsCommand::Show(_) => ("skills.show", "skills show"),
+            };
+            handle_migrated_result(
+                skills(args, reporter_mode, started_at),
+                reporter_mode,
+                started_at,
+                kind,
+                command,
+            )
         }
         Command::Run(args) => {
             run_mode(args).await?;
@@ -653,30 +685,61 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             guard_diff(args)?;
             Ok(0)
         }
-        Command::Score(args) => {
-            score(args)?;
-            Ok(0)
-        }
-        Command::Scorecards => {
-            scorecards()?;
-            Ok(0)
-        }
+        Command::Score(args) => handle_migrated_result(
+            score(args, reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "score",
+            "score",
+        ),
+        Command::Scorecards => handle_migrated_result(
+            scorecards(reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "scorecards",
+            "scorecards",
+        ),
         Command::CommentCard(args) => {
-            comment_card(args)?;
-            Ok(0)
+            let (kind, command) = match &args.command {
+                CommentCardCommand::New(_) => ("comment-card.new", "comment-card new"),
+                CommentCardCommand::List(_) => ("comment-card.list", "comment-card list"),
+                CommentCardCommand::Show(_) => ("comment-card.show", "comment-card show"),
+                CommentCardCommand::Dismiss(_) => ("comment-card.dismiss", "comment-card dismiss"),
+                CommentCardCommand::Consent(_) => ("comment-card.consent", "comment-card consent"),
+                CommentCardCommand::Submit(_) => ("comment-card.submit", "comment-card submit"),
+            };
+            handle_migrated_result(
+                comment_card(args, reporter_mode, started_at),
+                reporter_mode,
+                started_at,
+                kind,
+                command,
+            )
         }
-        Command::Retro(args) => {
-            retrospective(args)?;
-            Ok(0)
-        }
+        Command::Retro(args) => handle_migrated_result(
+            retrospective(args, reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "retro",
+            "retro",
+        ),
     }
 }
 
-/// Detects output mode before clap parsing so parse/setup errors can still emit envelopes.
+fn reporter_mode_from_cli_and_env(cli: &Cli) -> ReporterMode {
+    ReporterMode::from_flags(
+        cli.json || env_truthy("REBOTICA_JSON"),
+        cli.quiet || env_truthy("REBOTICA_QUIET"),
+    )
+}
+
+/// Detects output mode after clap parsing fails so parse/setup errors can still emit envelopes.
 ///
 /// This intentionally uses a simple token scan; an argument value literally equal to `--json`
 /// or `--quiet` can be mistaken for a global output flag before clap knows the command shape.
-fn reporter_mode_from_args_and_env(args: &[OsString]) -> ReporterMode {
+/// Successful parses use clap's resolved global flags instead, so normal argument values are not
+/// misclassified.
+fn reporter_mode_from_args_and_env_for_parse_error(args: &[OsString]) -> ReporterMode {
     let mut json = env_truthy("REBOTICA_JSON");
     let mut quiet = env_truthy("REBOTICA_QUIET");
     for arg in args.iter().skip(1).filter_map(|arg| arg.to_str()) {
@@ -752,6 +815,108 @@ fn emit_top_level_error(
         })
         .build();
     let _ = reporter.emit(&envelope);
+}
+
+fn emit_success<T: Serialize>(
+    reporter: &mut Reporter,
+    kind: &'static str,
+    command: &'static str,
+    started_at: DateTime<Utc>,
+    data: &T,
+) -> Result<()> {
+    if reporter.is_json() {
+        let envelope = Envelope::builder(kind)
+            .command(command)
+            .started_at(started_at)
+            .data(data)
+            .build();
+        reporter.emit(&envelope)?;
+    }
+    Ok(())
+}
+
+fn emit_failure<T: Serialize>(
+    reporter: &mut Reporter,
+    kind: &'static str,
+    command: &'static str,
+    started_at: DateTime<Utc>,
+    data: &T,
+    code: ErrorCode,
+    message: impl Into<String>,
+) -> Result<()> {
+    if reporter.is_json() {
+        let envelope = Envelope::builder(kind)
+            .command(command)
+            .started_at(started_at)
+            .data(data)
+            .error(EnvelopeError {
+                code,
+                message: message.into(),
+                details: None,
+            })
+            .build();
+        reporter.emit(&envelope)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CodedCommandError {
+    code: ErrorCode,
+    message: String,
+}
+
+impl fmt::Display for CodedCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CodedCommandError {}
+
+fn coded_error(code: ErrorCode, message: impl Into<String>) -> anyhow::Error {
+    CodedCommandError {
+        code,
+        message: message.into(),
+    }
+    .into()
+}
+
+fn with_error_code<T>(result: Result<T>, code: ErrorCode) -> Result<T> {
+    result.map_err(|error| coded_error(code, format!("{error:#}")))
+}
+
+fn handle_migrated_result(
+    result: Result<i32>,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+    kind: &'static str,
+    command: &'static str,
+) -> Result<i32> {
+    match result {
+        Ok(code) => Ok(code),
+        Err(error) if reporter_mode.is_json() => {
+            let message = format!("{error:#}");
+            let code = error
+                .downcast_ref::<CodedCommandError>()
+                .map(|error| error.code)
+                .unwrap_or(ErrorCode::Internal);
+            let mut reporter = Reporter::from_mode(reporter_mode);
+            let envelope = Envelope::builder(kind)
+                .command(command)
+                .started_at(started_at)
+                .error(EnvelopeError {
+                    code,
+                    message,
+                    details: None,
+                })
+                .data(EmptyData)
+                .build();
+            reporter.emit(&envelope)?;
+            Ok(1)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn run_mode(args: RunArgs) -> Result<()> {
@@ -939,91 +1104,173 @@ async fn doctor(
     }
 }
 
-async fn models(args: ModelsArgs, json: bool) -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+struct ModelsData {
+    configured: ModelRoutesData,
+    provider: Option<ProviderModelsData>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ModelRoutesData {
+    default: String,
+    review: String,
+    explain: String,
+    tests: String,
+    patch: String,
+    aliases: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProviderModelsData {
+    provider: String,
+    base_url: String,
+    models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProvidersData {
+    default: String,
+    providers: Vec<ProviderItemData>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProviderItemData {
+    name: String,
+    kind: String,
+    base_url: String,
+    api_key_env: String,
+    api_key_present: bool,
+    headers_count: usize,
+    implicit: bool,
+}
+
+async fn models(
+    args: ModelsArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
     if let Some(command) = args.command {
         return match command {
             ModelsCommand::Configure(configure_args) => {
-                configure_models(configure_args, json).await
+                configure_models(configure_args, reporter_mode, started_at).await
             }
         };
     }
 
-    let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
-    let routes = serde_json::json!({
-        "default": &loaded.config.models.default,
-        "review": &loaded.config.models.review,
-        "explain": &loaded.config.models.explain,
-        "tests": &loaded.config.models.tests,
-        "patch": &loaded.config.models.patch,
-        "aliases": &loaded.config.models.aliases,
-    });
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let loaded = with_error_code(
+        LoadedConfig::read_from(&std::env::current_dir()?),
+        ErrorCode::Config,
+    )?;
+    let routes = model_routes_data(&loaded.config);
 
     let provider_models = if args.configured_only {
         None
     } else {
-        let settings = provider_settings(&loaded, args.provider)?;
+        let settings =
+            with_error_code(provider_settings(&loaded, args.provider), ErrorCode::Config)?;
         let provider = OpenAICompatibleProvider::new(&settings)?;
-        Some(serde_json::json!({
-            "provider": settings.name,
-            "base_url": settings.base_url,
-            "models": provider.models().await?
-        }))
+        Some(ProviderModelsData {
+            provider: settings.name,
+            base_url: settings.base_url,
+            models: provider
+                .models()
+                .await
+                .map_err(|error| coded_error(ErrorCode::ProviderUnavailable, error.to_string()))?,
+        })
     };
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "configured": routes,
-                "provider": provider_models
-            }))?
-        );
+    let data = ModelsData {
+        configured: routes,
+        provider: provider_models,
+    };
+
+    if reporter.is_json() {
+        emit_success(&mut reporter, "models", "models", started_at, &data)?;
     } else {
-        println!("Configured routes:");
-        print_model_route("default", &loaded.config.models.default, &loaded.config);
-        print_model_route("review", &loaded.config.models.review, &loaded.config);
-        print_model_route("explain", &loaded.config.models.explain, &loaded.config);
-        print_model_route("tests", &loaded.config.models.tests, &loaded.config);
-        print_model_route("patch", &loaded.config.models.patch, &loaded.config);
+        reporter.human("Configured routes:")?;
+        print_model_route(
+            &mut reporter,
+            "default",
+            &loaded.config.models.default,
+            &loaded.config,
+        )?;
+        print_model_route(
+            &mut reporter,
+            "review",
+            &loaded.config.models.review,
+            &loaded.config,
+        )?;
+        print_model_route(
+            &mut reporter,
+            "explain",
+            &loaded.config.models.explain,
+            &loaded.config,
+        )?;
+        print_model_route(
+            &mut reporter,
+            "tests",
+            &loaded.config.models.tests,
+            &loaded.config,
+        )?;
+        print_model_route(
+            &mut reporter,
+            "patch",
+            &loaded.config.models.patch,
+            &loaded.config,
+        )?;
         if !loaded.config.models.aliases.is_empty() {
-            println!("\nAliases:");
+            reporter.human("\nAliases:")?;
             for (alias, target) in &loaded.config.models.aliases {
-                println!("  {alias} -> {target}");
+                reporter.human(&format!("  {alias} -> {target}"))?;
             }
         }
-        if let Some(provider_models) = provider_models {
-            println!(
+        if let Some(provider_models) = &data.provider {
+            reporter.human(&format!(
                 "\nProvider models ({}):",
-                provider_models["provider"].as_str().unwrap_or("provider")
-            );
-            for model in provider_models["models"].as_array().into_iter().flatten() {
-                if let Some(model) = model.as_str() {
-                    println!("  {model}");
-                }
+                provider_models.provider
+            ))?;
+            for model in &provider_models.models {
+                reporter.human(&format!("  {model}"))?;
             }
         }
     }
-    Ok(())
+    Ok(0)
 }
 
-async fn configure_models(args: ModelConfigureArgs, json: bool) -> Result<()> {
-    let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
+async fn configure_models(
+    args: ModelConfigureArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let loaded = with_error_code(
+        LoadedConfig::read_from(&std::env::current_dir()?),
+        ErrorCode::Config,
+    )?;
     let Some(config_path) = loaded.path.clone() else {
-        return Err(anyhow!(
-            "no project config found. Run rbtc init before configuring model routes."
+        return Err(coded_error(
+            ErrorCode::Config,
+            "no project config found. Run rbtc init before configuring model routes.",
         ));
     };
 
     if args.model.is_none() && !args.detect {
-        return Err(anyhow!(
-            "pass --model MODEL_ID to configure manually, or --detect to inspect the provider."
+        return Err(coded_error(
+            ErrorCode::Usage,
+            "pass --model MODEL_ID to configure manually, or --detect to inspect the provider.",
         ));
     }
 
-    let alias = normalize_model_alias(&args.alias)?;
+    let alias = normalize_model_alias(&args.alias)
+        .map_err(|error| coded_error(ErrorCode::Usage, error.to_string()))?;
     let report = if let Some(model) = args.model {
-        let model = normalize_model_id(&model)?;
-        let update = write_model_routes(&config_path, &alias, &model, args.force)?;
+        let model = normalize_model_id(&model)
+            .map_err(|error| coded_error(ErrorCode::Usage, error.to_string()))?;
+        let update = with_error_code(
+            write_model_routes(&config_path, &alias, &model, args.force),
+            ErrorCode::Config,
+        )?;
         ModelConfigureReport::Configured {
             source: "manual".to_string(),
             provider: None,
@@ -1040,15 +1287,22 @@ async fn configure_models(args: ModelConfigureArgs, json: bool) -> Result<()> {
                     error: error.to_string(),
                     next_step: model_configure_next_step(),
                 };
-                print_model_configure_report(&report, json)?;
-                return Ok(());
+                return finish_model_configure_report(
+                    &mut reporter,
+                    started_at,
+                    &report,
+                    Some(ErrorCode::Config),
+                );
             }
         };
         let provider = OpenAICompatibleProvider::new(&settings)?;
         match choose_model_from_detection(provider.models().await.map_err(|error| error.to_string()))
         {
             DetectedModelChoice::One(model) => {
-                let update = write_model_routes(&config_path, &alias, &model, args.force)?;
+                let update = with_error_code(
+                    write_model_routes(&config_path, &alias, &model, args.force),
+                    ErrorCode::Config,
+                )?;
                 ModelConfigureReport::Configured {
                     source: "detected".to_string(),
                     provider: Some(settings.name),
@@ -1080,32 +1334,86 @@ async fn configure_models(args: ModelConfigureArgs, json: bool) -> Result<()> {
         }
     };
 
-    print_model_configure_report(&report, json)?;
-    Ok(())
+    let error_code = match &report {
+        ModelConfigureReport::Configured { .. } => None,
+        ModelConfigureReport::ProviderUnavailable { .. } => Some(ErrorCode::ProviderUnavailable),
+        ModelConfigureReport::NoModels { .. } | ModelConfigureReport::MultipleModels { .. } => {
+            Some(ErrorCode::ProviderUnavailable)
+        }
+    };
+    finish_model_configure_report(&mut reporter, started_at, &report, error_code)
 }
 
-fn providers(_args: ProvidersArgs, json: bool) -> Result<()> {
-    let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
-    let summary = provider_summary(&loaded.config);
-    if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
+fn finish_model_configure_report(
+    reporter: &mut Reporter,
+    started_at: DateTime<Utc>,
+    report: &ModelConfigureReport,
+    error_code: Option<ErrorCode>,
+) -> Result<i32> {
+    print_model_configure_report(reporter, &report)?;
+    let data = ModelConfigureData::from(report);
+    if let Some(code) = error_code {
+        emit_failure(
+            reporter,
+            "models.configure",
+            "models configure",
+            started_at,
+            &data,
+            code,
+            data.error_message(),
+        )?;
+        Ok(if reporter.is_json() { 1 } else { 0 })
     } else {
-        println!("Default provider: {}", loaded.config.providers.default);
-        for item in summary["providers"].as_array().into_iter().flatten() {
-            let name = item["name"].as_str().unwrap_or("");
-            let base_url = item["base_url"].as_str().unwrap_or("");
-            let kind = item["kind"].as_str().unwrap_or("");
-            let auth = if item["api_key_env"].as_str().unwrap_or("").is_empty() {
+        emit_success(
+            reporter,
+            "models.configure",
+            "models configure",
+            started_at,
+            &data,
+        )?;
+        Ok(0)
+    }
+}
+
+fn providers(
+    _args: ProvidersArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let loaded = with_error_code(
+        LoadedConfig::read_from(&std::env::current_dir()?),
+        ErrorCode::Config,
+    )?;
+    let summary = provider_summary(&loaded.config);
+    if reporter.is_json() {
+        emit_success(
+            &mut reporter,
+            "providers",
+            "providers",
+            started_at,
+            &summary,
+        )?;
+    } else {
+        reporter.human(&format!(
+            "Default provider: {}",
+            loaded.config.providers.default
+        ))?;
+        for item in &summary.providers {
+            let auth = if item.api_key_env.is_empty() {
                 "no api key env".to_string()
-            } else if item["api_key_present"].as_bool().unwrap_or(false) {
-                format!("{} present", item["api_key_env"].as_str().unwrap_or(""))
+            } else if item.api_key_present {
+                format!("{} present", item.api_key_env)
             } else {
-                format!("{} missing", item["api_key_env"].as_str().unwrap_or(""))
+                format!("{} missing", item.api_key_env)
             };
-            println!("  {name}: {kind} {base_url} ({auth})");
+            reporter.human(&format!(
+                "  {}: {} {} ({auth})",
+                item.name, item.kind, item.base_url
+            ))?;
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 async fn health(args: ProviderArgs) -> Result<()> {
@@ -1145,22 +1453,80 @@ async fn smoke(args: SmokeArgs) -> Result<()> {
     Ok(())
 }
 
-fn init_project(args: InitArgs) -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    init_project_at(&cwd, args.force, None)
+#[derive(Debug, Clone, Serialize)]
+struct InitData {
+    written: Vec<String>,
+    skipped: Vec<String>,
+    model_routes_empty: bool,
+    next_steps: Vec<String>,
 }
 
-fn init_project_at(cwd: &Path, force: bool, template_override: Option<&str>) -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+struct InstallData {
+    target: String,
+    actions: Vec<InstallActionData>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct InstallActionData {
+    action: String,
+    subject: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillsListData {
+    skills: Vec<SkillInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillsShowData {
+    skill: SkillInfo,
+    rendered: String,
+}
+
+fn init_project(
+    args: InitArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let cwd = std::env::current_dir()?;
+    let data = init_project_at(&cwd, args.force, None)?;
+    if reporter.is_json() {
+        emit_success(&mut reporter, "init", "init", started_at, &data)?;
+    } else {
+        print_init_report(&mut reporter, &data)?;
+    }
+    Ok(0)
+}
+
+fn init_project_at(cwd: &Path, force: bool, template_override: Option<&str>) -> Result<InitData> {
     let config_path = cwd.join(".rebotica.yml");
     let state_dir = cwd.join(".rebotica");
     if config_path.exists() && !force {
-        return Err(anyhow!(
-            ".rebotica.yml already exists. Use --force to overwrite."
+        return Err(coded_error(
+            ErrorCode::Config,
+            ".rebotica.yml already exists. Use --force to overwrite.",
         ));
     }
 
-    ensure_dir(&state_dir.join("tasks"))?;
-    ensure_dir(&state_dir.join("runs"))?;
+    let task_dir = state_dir.join("tasks");
+    let runs_dir = state_dir.join("runs");
+    let state_ignore = state_dir.join(".gitignore");
+    let paths = [
+        config_path.clone(),
+        task_dir.clone(),
+        runs_dir.clone(),
+        state_ignore.clone(),
+    ];
+    let existed = paths
+        .iter()
+        .map(|path| (path.display().to_string(), path.exists()))
+        .collect::<BTreeMap<_, _>>();
+
+    ensure_dir(&task_dir)?;
+    ensure_dir(&runs_dir)?;
 
     let project_name = cwd
         .file_name()
@@ -1173,63 +1539,145 @@ fn init_project_at(cwd: &Path, force: bool, template_override: Option<&str>) -> 
     let template = raw_template.replace("name: example-project", &format!("name: {project_name}"));
     fs::write(&config_path, template)?;
 
-    let state_ignore = state_dir.join(".gitignore");
     if !state_ignore.exists() || force {
         fs::write(&state_ignore, "runs/\n")?;
     }
 
-    println!("created {}", config_path.display());
-    println!("created {}", state_dir.join("tasks").display());
-    println!("created {}", state_dir.join("runs").display());
-    println!("created {}", state_ignore.display());
     let loaded = LoadedConfig::read_from(cwd)?;
-    if model_routes_empty(&loaded.config) {
-        println!();
-        println!("model routes are empty.");
-        println!("next: rbtc models configure --detect");
-        println!("or:   rbtc models configure --model MODEL_ID");
+    let model_routes_empty = model_routes_empty(&loaded.config);
+    let mut written = Vec::new();
+    let mut skipped = Vec::new();
+    for path in paths {
+        let display = path.display().to_string();
+        if force || !existed.get(&display).copied().unwrap_or(false) {
+            written.push(display);
+        } else {
+            skipped.push(display);
+        }
+    }
+    Ok(InitData {
+        written,
+        skipped,
+        model_routes_empty,
+        next_steps: if model_routes_empty {
+            vec![
+                "rbtc models configure --detect".to_string(),
+                "rbtc models configure --model MODEL_ID".to_string(),
+            ]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+fn print_init_report(reporter: &mut Reporter, data: &InitData) -> Result<()> {
+    for path in &data.written {
+        reporter.human(&format!("created {path}"))?;
+    }
+    for path in &data.skipped {
+        reporter.human(&format!("created {path}"))?;
+    }
+    if data.model_routes_empty {
+        reporter.human("")?;
+        reporter.human("model routes are empty.")?;
+        reporter.human("next: rbtc models configure --detect")?;
+        reporter.human("or:   rbtc models configure --model MODEL_ID")?;
     }
     Ok(())
 }
 
-fn install(args: InstallArgs) -> Result<()> {
-    match args.target {
-        InstallTarget::Claude => install_claude(args.copy, args.force),
-        InstallTarget::Codex => install_codex(args.copy, args.force, args.target_dir),
-        InstallTarget::Github => install_github(args.force),
+fn install(
+    args: InstallArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let target = args.target;
+    let data = match target {
+        InstallTarget::Claude => InstallData {
+            target: "claude".to_string(),
+            actions: install_claude(args.copy, args.force)?,
+        },
+        InstallTarget::Codex => InstallData {
+            target: "codex".to_string(),
+            actions: install_codex(args.copy, args.force, args.target_dir)?,
+        },
+        InstallTarget::Github => InstallData {
+            target: "github".to_string(),
+            actions: install_github(args.force)?,
+        },
         InstallTarget::All => {
-            install_claude(args.copy, args.force)?;
-            install_codex(args.copy, args.force, args.target_dir)?;
-            install_github(args.force)
+            let mut actions = install_claude(args.copy, args.force)?;
+            actions.extend(install_codex(args.copy, args.force, args.target_dir)?);
+            actions.extend(install_github(args.force)?);
+            InstallData {
+                target: "all".to_string(),
+                actions,
+            }
+        }
+    };
+    if reporter.is_json() {
+        emit_success(&mut reporter, "install", "install", started_at, &data)?;
+    } else {
+        reporter.human(&format!("Installed {} adapter assets:", data.target))?;
+        for action in &data.actions {
+            reporter.human(&format!(
+                "  {} {} into {}",
+                action.action, action.subject, action.path
+            ))?;
         }
     }
+    Ok(0)
 }
 
-fn skills(args: SkillsArgs, json: bool) -> Result<()> {
+fn skills(args: SkillsArgs, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
     let cwd = std::env::current_dir()?;
     match args.command {
         SkillsCommand::List(_args) => {
             let skills = discover_skills(&cwd)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&skills)?);
-                return Ok(());
+            let data = SkillsListData { skills };
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "skills.list",
+                    "skills list",
+                    started_at,
+                    &data,
+                )?;
+                return Ok(0);
             }
-            if skills.is_empty() {
-                println!("No skills found.");
-                return Ok(());
+            if data.skills.is_empty() {
+                reporter.human("No skills found.")?;
+                return Ok(0);
             }
-            for skill in skills {
-                println!(
+            for skill in data.skills {
+                reporter.human(&format!(
                     "{}\t{}\t{}\t{}",
                     skill.source, skill.id, skill.content_hash, skill.path
-                );
+                ))?;
             }
-            Ok(())
+            Ok(0)
         }
         SkillsCommand::Show(args) => {
             let skill = resolve_skill(&cwd, &args.skill)?;
-            println!("{}", render_selected_skills(&[skill]));
-            Ok(())
+            let rendered = render_selected_skills(std::slice::from_ref(&skill));
+            let data = SkillsShowData {
+                skill: skill.info,
+                rendered,
+            };
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "skills.show",
+                    "skills show",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                reporter.human(&data.rendered)?;
+            }
+            Ok(0)
         }
     }
 }
@@ -1743,12 +2191,12 @@ struct ScoreEvent {
     notes: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct ScorecardSummary {
     models: BTreeMap<String, BTreeMap<String, ModelModeSummary>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct ModelModeSummary {
     scored_runs: usize,
     rated_runs: usize,
@@ -1758,16 +2206,50 @@ struct ModelModeSummary {
     labels: BTreeMap<String, usize>,
 }
 
-fn score(args: ScoreArgs) -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+struct ScoreData {
+    event: ScoreEvent,
+    feedback_path: String,
+    scorecards_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ScorecardsData {
+    summary: ScorecardSummary,
+    path: String,
+    exists: bool,
+}
+
+fn score(args: ScoreArgs, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let data = score_data(args)?;
+    if reporter.is_json() {
+        emit_success(&mut reporter, "score", "score", started_at, &data)?;
+    } else {
+        reporter.human(&format!(
+            "recorded score feedback for run {}",
+            data.event.run_id
+        ))?;
+    }
+    Ok(0)
+}
+
+fn score_data(args: ScoreArgs) -> Result<ScoreData> {
     if let Some(rating) = args.rating {
         if !(1..=5).contains(&rating) {
-            return Err(anyhow!("--rating must be between 1 and 5"));
+            return Err(coded_error(
+                ErrorCode::Usage,
+                "--rating must be between 1 and 5",
+            ));
         }
     }
 
     let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
     if !run_dir.exists() {
-        return Err(anyhow!("run not found: {}", args.run_id));
+        return Err(coded_error(
+            ErrorCode::Config,
+            format!("run not found: {}", args.run_id),
+        ));
     }
 
     let scorecard = parse_scorecard_seed(&run_dir.join("scorecard.yml"))?;
@@ -1805,18 +2287,46 @@ fn score(args: ScoreArgs) -> Result<()> {
     )?;
     append_model_event(&event)?;
     rebuild_model_scorecards()?;
-    println!("recorded score feedback for run {}", event.run_id);
-    Ok(())
+    Ok(ScoreData {
+        event,
+        feedback_path: run_dir.join("feedback.yml").display().to_string(),
+        scorecards_path: rebotica_runlog::root()
+            .join("model-scorecards.yml")
+            .display()
+            .to_string(),
+    })
 }
 
-fn scorecards() -> Result<()> {
+fn scorecards(reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
     let path = rebotica_runlog::root().join("model-scorecards.yml");
     if path.exists() {
-        print!("{}", fs::read_to_string(path)?);
+        let text = fs::read_to_string(&path)?;
+        if reporter.is_json() {
+            let summary = serde_yaml::from_str(&text)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+            let data = ScorecardsData {
+                summary,
+                path: path.display().to_string(),
+                exists: true,
+            };
+            emit_success(&mut reporter, "scorecards", "scorecards", started_at, &data)?;
+        } else {
+            reporter.human(text.trim_end())?;
+        }
     } else {
-        println!("models: {{}}");
+        let data = ScorecardsData {
+            summary: ScorecardSummary::default(),
+            path: path.display().to_string(),
+            exists: false,
+        };
+        if reporter.is_json() {
+            emit_success(&mut reporter, "scorecards", "scorecards", started_at, &data)?;
+        } else {
+            reporter.human("models: {}")?;
+        }
     }
-    Ok(())
+    Ok(0)
 }
 
 fn parse_scorecard_seed(path: &Path) -> Result<BTreeMap<String, String>> {
@@ -1890,20 +2400,185 @@ fn rebuild_model_scorecards() -> Result<()> {
     Ok(())
 }
 
-fn comment_card(args: CommentCardArgs) -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardNewData {
+    card_id: String,
+    status: String,
+    path: String,
+    title: String,
+    kind: String,
+    area: String,
+    source: String,
+    run_id: Option<String>,
+    labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardListData {
+    status_filter: String,
+    cards: Vec<CommentCardListItemData>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardListItemData {
+    status: String,
+    card_id: String,
+    title: String,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardShowData {
+    card_id: String,
+    status: String,
+    path: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardMoveData {
+    card_id: String,
+    from: String,
+    to: String,
+    source_path: String,
+    target_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardConsentData {
+    github_submit_consent: bool,
+    default_repo: String,
+    settings_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CommentCardSubmitData {
+    card_id: String,
+    repo: String,
+    issue_output: String,
+    move_result: CommentCardMoveData,
+}
+
+fn comment_card(
+    args: CommentCardArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
     match args.command {
-        CommentCardCommand::New(args) => create_comment_card(args),
-        CommentCardCommand::List(args) => list_comment_cards(&args.status),
-        CommentCardCommand::Show(args) => show_comment_card(&args.card_id),
-        CommentCardCommand::Dismiss(args) => {
-            move_comment_card(&args.card_id, "pending", "dismissed")
+        CommentCardCommand::New(args) => {
+            let data = create_comment_card(args)?;
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "comment-card.new",
+                    "comment-card new",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                reporter.human(&format!("created comment card: {}", data.path))?;
+            }
+            Ok(0)
         }
-        CommentCardCommand::Consent(args) => configure_comment_card_consent(args),
-        CommentCardCommand::Submit(args) => submit_comment_card(args),
+        CommentCardCommand::List(args) => {
+            let data = list_comment_cards(&args.status)?;
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "comment-card.list",
+                    "comment-card list",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                for card in &data.cards {
+                    reporter.human(&format!(
+                        "{}\t{}\t{}",
+                        card.status, card.card_id, card.title
+                    ))?;
+                }
+            }
+            Ok(0)
+        }
+        CommentCardCommand::Show(args) => {
+            let data = show_comment_card(&args.card_id)?;
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "comment-card.show",
+                    "comment-card show",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                reporter.human(&data.text)?;
+            }
+            Ok(0)
+        }
+        CommentCardCommand::Dismiss(args) => {
+            let data = move_comment_card(&args.card_id, "pending", "dismissed")?;
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "comment-card.dismiss",
+                    "comment-card dismiss",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                reporter.human(&format!(
+                    "moved comment card {} to {}",
+                    data.card_id, data.to
+                ))?;
+            }
+            Ok(0)
+        }
+        CommentCardCommand::Consent(args) => {
+            let data = configure_comment_card_consent(args)?;
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "comment-card.consent",
+                    "comment-card consent",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                reporter.human(&format!(
+                    "comment-card github_submit_consent: {}",
+                    data.github_submit_consent
+                ))?;
+                reporter.human(&format!("comment-card default_repo: {}", data.default_repo))?;
+            }
+            Ok(0)
+        }
+        CommentCardCommand::Submit(args) => {
+            let data = submit_comment_card(args)?;
+            if reporter.is_json() {
+                emit_success(
+                    &mut reporter,
+                    "comment-card.submit",
+                    "comment-card submit",
+                    started_at,
+                    &data,
+                )?;
+            } else {
+                reporter.human(&format!(
+                    "moved comment card {} to {}",
+                    data.move_result.card_id, data.move_result.to
+                ))?;
+                let issue_output = data.issue_output.trim_end();
+                if !issue_output.is_empty() {
+                    reporter.human(issue_output)?;
+                }
+            }
+            Ok(0)
+        }
     }
 }
 
-fn create_comment_card(args: CommentCardNewArgs) -> Result<()> {
+fn create_comment_card(args: CommentCardNewArgs) -> Result<CommentCardNewData> {
     let id = rebotica_runlog::make_id();
     let labels = comment_card_labels(&args.kind, &args.area, &args.source, &args.labels);
     let body = args.body.unwrap_or_else(|| {
@@ -1924,8 +2599,17 @@ fn create_comment_card(args: CommentCardNewArgs) -> Result<()> {
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{id}.md"));
     fs::write(&path, text)?;
-    println!("created comment card: {}", path.display());
-    Ok(())
+    Ok(CommentCardNewData {
+        card_id: id,
+        status: "pending".to_string(),
+        path: path.display().to_string(),
+        title: args.title,
+        kind: args.kind,
+        area: args.area,
+        source: args.source,
+        run_id: args.from_run,
+        labels,
+    })
 }
 
 fn comment_card_labels(kind: &str, area: &str, source: &str, extra: &[String]) -> Vec<String> {
@@ -1976,12 +2660,13 @@ fn yaml_quote(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-fn list_comment_cards(status: &str) -> Result<()> {
+fn list_comment_cards(status: &str) -> Result<CommentCardListData> {
     let statuses = if status == "all" {
         vec!["pending", "submitted", "dismissed"]
     } else {
         vec![status]
     };
+    let mut cards = Vec::new();
     for status in statuses {
         let dir = comment_card_status_dir(status);
         if !dir.exists() {
@@ -1998,31 +2683,54 @@ fn list_comment_cards(status: &str) -> Result<()> {
                 .map(|stem| stem.to_string_lossy().to_string())
                 .unwrap_or_default();
             let title = comment_card_field(&path, "title")?.unwrap_or_default();
-            println!("{status}\t{id}\t{title}");
+            cards.push(CommentCardListItemData {
+                status: status.to_string(),
+                card_id: id,
+                title,
+                path: path.display().to_string(),
+            });
         }
     }
-    Ok(())
+    Ok(CommentCardListData {
+        status_filter: status.to_string(),
+        cards,
+    })
 }
 
-fn show_comment_card(card_id: &str) -> Result<()> {
+fn show_comment_card(card_id: &str) -> Result<CommentCardShowData> {
     let path = find_comment_card(card_id)?;
-    println!("{}", fs::read_to_string(path)?);
-    Ok(())
+    let status = path
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(CommentCardShowData {
+        card_id: card_id.to_string(),
+        status,
+        text: fs::read_to_string(&path)?,
+        path: path.display().to_string(),
+    })
 }
 
-fn move_comment_card(card_id: &str, from: &str, to: &str) -> Result<()> {
+fn move_comment_card(card_id: &str, from: &str, to: &str) -> Result<CommentCardMoveData> {
     let source = comment_card_status_dir(from).join(format!("{card_id}.md"));
     if !source.exists() {
         return Err(anyhow!("comment card not found in {from}: {card_id}"));
     }
     let target_dir = comment_card_status_dir(to);
     fs::create_dir_all(&target_dir)?;
-    fs::rename(&source, target_dir.join(format!("{card_id}.md")))?;
-    println!("moved comment card {card_id} to {to}");
-    Ok(())
+    let target = target_dir.join(format!("{card_id}.md"));
+    fs::rename(&source, &target)?;
+    Ok(CommentCardMoveData {
+        card_id: card_id.to_string(),
+        from: from.to_string(),
+        to: to.to_string(),
+        source_path: source.display().to_string(),
+        target_path: target.display().to_string(),
+    })
 }
 
-fn configure_comment_card_consent(args: CommentCardConsentArgs) -> Result<()> {
+fn configure_comment_card_consent(args: CommentCardConsentArgs) -> Result<CommentCardConsentData> {
     let mut settings = read_settings()?;
     if args.allow_github {
         settings.comment_cards.github_submit_consent = true;
@@ -2034,18 +2742,14 @@ fn configure_comment_card_consent(args: CommentCardConsentArgs) -> Result<()> {
         settings.comment_cards.default_repo = repo;
     }
     write_settings(&settings)?;
-    println!(
-        "comment-card github_submit_consent: {}",
-        settings.comment_cards.github_submit_consent
-    );
-    println!(
-        "comment-card default_repo: {}",
-        settings.comment_cards.default_repo
-    );
-    Ok(())
+    Ok(CommentCardConsentData {
+        github_submit_consent: settings.comment_cards.github_submit_consent,
+        default_repo: settings.comment_cards.default_repo,
+        settings_path: settings_path().display().to_string(),
+    })
 }
 
-fn submit_comment_card(args: CommentCardSubmitArgs) -> Result<()> {
+fn submit_comment_card(args: CommentCardSubmitArgs) -> Result<CommentCardSubmitData> {
     let settings = read_settings()?;
     if !settings.comment_cards.github_submit_consent {
         return Err(anyhow!(
@@ -2093,9 +2797,13 @@ fn submit_comment_card(args: CommentCardSubmitArgs) -> Result<()> {
             }
         ));
     }
-    move_comment_card(&args.card_id, "pending", "submitted")?;
-    print!("{}", String::from_utf8_lossy(&output.stdout));
-    Ok(())
+    let move_result = move_comment_card(&args.card_id, "pending", "submitted")?;
+    Ok(CommentCardSubmitData {
+        card_id: args.card_id,
+        repo,
+        issue_output: String::from_utf8_lossy(&output.stdout).to_string(),
+        move_result,
+    })
 }
 
 fn ensure_github_labels(repo: &str, labels: &[String]) {
@@ -2228,20 +2936,42 @@ fn print_post_run_footer(run_id: &str, area: &str) {
     );
 }
 
-fn retrospective(args: RetroArgs) -> Result<()> {
+#[derive(Debug, Clone, Serialize)]
+struct RetroData {
+    run_id: String,
+    path: String,
+    written: bool,
+}
+
+fn retrospective(
+    args: RetroArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
     let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
     if !run_dir.exists() {
         return Err(anyhow!("run not found: {}", args.run_id));
     }
     let output = run_dir.join("retrospective.md");
+    let written = !output.exists() || args.force;
     if !output.exists() || args.force {
         fs::write(
             &output,
             rebotica_runlog::retrospective_template(&args.run_id),
         )?;
     }
-    println!("{}", output.display());
-    Ok(())
+    let data = RetroData {
+        run_id: args.run_id,
+        path: output.display().to_string(),
+        written,
+    };
+    if reporter.is_json() {
+        emit_success(&mut reporter, "retro", "retro", started_at, &data)?;
+    } else {
+        reporter.human(&data.path)?;
+    }
+    Ok(0)
 }
 
 async fn run_worker(
@@ -2477,15 +3207,125 @@ fn write_model_routes(
     })
 }
 
-fn print_model_configure_report(report: &ModelConfigureReport, json: bool) -> Result<()> {
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&model_configure_json(report))?
-        );
+#[derive(Debug, Clone, Serialize)]
+struct ModelConfigureData {
+    status: String,
+    source: Option<String>,
+    provider: Option<String>,
+    base_url: Option<String>,
+    config_path: Option<String>,
+    alias: Option<String>,
+    model: Option<String>,
+    routes_written: Vec<String>,
+    routes_kept: Vec<String>,
+    models: Vec<String>,
+    error: Option<String>,
+    next_step: String,
+}
+
+impl From<&ModelConfigureReport> for ModelConfigureData {
+    fn from(report: &ModelConfigureReport) -> Self {
+        match report {
+            ModelConfigureReport::Configured {
+                source,
+                provider,
+                base_url,
+                update,
+            } => Self {
+                status: "configured".to_string(),
+                source: Some(source.clone()),
+                provider: provider.clone(),
+                base_url: base_url.clone(),
+                config_path: Some(update.config_path.clone()),
+                alias: Some(update.alias.clone()),
+                model: Some(update.model.clone()),
+                routes_written: update.routes_written.clone(),
+                routes_kept: update.routes_kept.clone(),
+                models: Vec::new(),
+                error: None,
+                next_step: format!("rbtc smoke --model {}", update.alias),
+            },
+            ModelConfigureReport::ProviderUnavailable {
+                provider,
+                base_url,
+                error,
+                next_step,
+            } => Self {
+                status: "provider_unavailable".to_string(),
+                source: None,
+                provider: provider.clone(),
+                base_url: base_url.clone(),
+                config_path: None,
+                alias: None,
+                model: None,
+                routes_written: Vec::new(),
+                routes_kept: Vec::new(),
+                models: Vec::new(),
+                error: Some(error.clone()),
+                next_step: next_step.clone(),
+            },
+            ModelConfigureReport::NoModels {
+                provider,
+                base_url,
+                next_step,
+            } => Self {
+                status: "no_models".to_string(),
+                source: None,
+                provider: Some(provider.clone()),
+                base_url: Some(base_url.clone()),
+                config_path: None,
+                alias: None,
+                model: None,
+                routes_written: Vec::new(),
+                routes_kept: Vec::new(),
+                models: Vec::new(),
+                error: None,
+                next_step: next_step.clone(),
+            },
+            ModelConfigureReport::MultipleModels {
+                provider,
+                base_url,
+                models,
+                next_step,
+            } => Self {
+                status: "multiple_models".to_string(),
+                source: None,
+                provider: Some(provider.clone()),
+                base_url: Some(base_url.clone()),
+                config_path: None,
+                alias: None,
+                model: None,
+                routes_written: Vec::new(),
+                routes_kept: Vec::new(),
+                models: models.clone(),
+                error: None,
+                next_step: next_step.clone(),
+            },
+        }
+    }
+}
+
+impl ModelConfigureData {
+    fn error_message(&self) -> String {
+        match self.status.as_str() {
+            "provider_unavailable" => self
+                .error
+                .clone()
+                .unwrap_or_else(|| "provider model detection unavailable".to_string()),
+            "no_models" => "provider returned no models".to_string(),
+            "multiple_models" => "multiple provider models found".to_string(),
+            _ => "model configuration failed".to_string(),
+        }
+    }
+}
+
+fn print_model_configure_report(
+    reporter: &mut Reporter,
+    report: &ModelConfigureReport,
+) -> Result<()> {
+    if reporter.is_json() {
         return Ok(());
     }
-
     match report {
         ModelConfigureReport::Configured {
             source,
@@ -2493,21 +3333,27 @@ fn print_model_configure_report(report: &ModelConfigureReport, json: bool) -> Re
             base_url,
             update,
         } => {
-            println!("configured model routes in {}", update.config_path);
-            println!("  source: {source}");
+            reporter.human(&format!(
+                "configured model routes in {}",
+                update.config_path
+            ))?;
+            reporter.human(&format!("  source: {source}"))?;
             if let Some(provider) = provider {
-                println!("  provider: {provider}");
+                reporter.human(&format!("  provider: {provider}"))?;
             }
             if let Some(base_url) = base_url {
-                println!("  base_url: {base_url}");
+                reporter.human(&format!("  base_url: {base_url}"))?;
             }
-            println!("  alias: {} -> {}", update.alias, update.model);
-            println!(
+            reporter.human(&format!("  alias: {} -> {}", update.alias, update.model))?;
+            reporter.human(&format!(
                 "  routes written: {}",
                 comma_list_or_none(&update.routes_written)
-            );
-            println!("  routes kept: {}", comma_list_or_none(&update.routes_kept));
-            println!("next: rbtc smoke --model {}", update.alias);
+            ))?;
+            reporter.human(&format!(
+                "  routes kept: {}",
+                comma_list_or_none(&update.routes_kept)
+            ))?;
+            reporter.human(&format!("next: rbtc smoke --model {}", update.alias))?;
         }
         ModelConfigureReport::ProviderUnavailable {
             provider,
@@ -2515,25 +3361,25 @@ fn print_model_configure_report(report: &ModelConfigureReport, json: bool) -> Re
             error,
             next_step,
         } => {
-            println!("provider model detection unavailable; no changes written");
+            reporter.human("provider model detection unavailable; no changes written")?;
             if let Some(provider) = provider {
-                println!("  provider: {provider}");
+                reporter.human(&format!("  provider: {provider}"))?;
             }
             if let Some(base_url) = base_url {
-                println!("  base_url: {base_url}");
+                reporter.human(&format!("  base_url: {base_url}"))?;
             }
-            println!("  error: {error}");
-            println!("next: {next_step}");
+            reporter.human(&format!("  error: {error}"))?;
+            reporter.human(&format!("next: {next_step}"))?;
         }
         ModelConfigureReport::NoModels {
             provider,
             base_url,
             next_step,
         } => {
-            println!("provider returned no models; no changes written");
-            println!("  provider: {provider}");
-            println!("  base_url: {base_url}");
-            println!("next: {next_step}");
+            reporter.human("provider returned no models; no changes written")?;
+            reporter.human(&format!("  provider: {provider}"))?;
+            reporter.human(&format!("  base_url: {base_url}"))?;
+            reporter.human(&format!("next: {next_step}"))?;
         }
         ModelConfigureReport::MultipleModels {
             provider,
@@ -2541,73 +3387,17 @@ fn print_model_configure_report(report: &ModelConfigureReport, json: bool) -> Re
             models,
             next_step,
         } => {
-            println!("multiple provider models found; no changes written");
-            println!("  provider: {provider}");
-            println!("  base_url: {base_url}");
-            println!("models:");
+            reporter.human("multiple provider models found; no changes written")?;
+            reporter.human(&format!("  provider: {provider}"))?;
+            reporter.human(&format!("  base_url: {base_url}"))?;
+            reporter.human("models:")?;
             for model in models {
-                println!("  {model}");
+                reporter.human(&format!("  {model}"))?;
             }
-            println!("next: {next_step}");
+            reporter.human(&format!("next: {next_step}"))?;
         }
     }
     Ok(())
-}
-
-fn model_configure_json(report: &ModelConfigureReport) -> serde_json::Value {
-    match report {
-        ModelConfigureReport::Configured {
-            source,
-            provider,
-            base_url,
-            update,
-        } => serde_json::json!({
-            "status": "configured",
-            "source": source,
-            "provider": provider,
-            "base_url": base_url,
-            "config_path": update.config_path,
-            "alias": update.alias,
-            "model": update.model,
-            "routes_written": update.routes_written,
-            "routes_kept": update.routes_kept,
-            "next_step": format!("rbtc smoke --model {}", update.alias)
-        }),
-        ModelConfigureReport::ProviderUnavailable {
-            provider,
-            base_url,
-            error,
-            next_step,
-        } => serde_json::json!({
-            "status": "provider_unavailable",
-            "provider": provider,
-            "base_url": base_url,
-            "error": error,
-            "next_step": next_step
-        }),
-        ModelConfigureReport::NoModels {
-            provider,
-            base_url,
-            next_step,
-        } => serde_json::json!({
-            "status": "no_models",
-            "provider": provider,
-            "base_url": base_url,
-            "next_step": next_step
-        }),
-        ModelConfigureReport::MultipleModels {
-            provider,
-            base_url,
-            models,
-            next_step,
-        } => serde_json::json!({
-            "status": "multiple_models",
-            "provider": provider,
-            "base_url": base_url,
-            "models": models,
-            "next_step": next_step
-        }),
-    }
 }
 
 fn model_configure_next_step() -> String {
@@ -2736,49 +3526,66 @@ fn validate_config(loaded: &LoadedConfig) -> Vec<Check> {
     checks
 }
 
-fn provider_summary(config: &ProjectConfig) -> serde_json::Value {
+fn model_routes_data(config: &ProjectConfig) -> ModelRoutesData {
+    ModelRoutesData {
+        default: config.models.default.clone(),
+        review: config.models.review.clone(),
+        explain: config.models.explain.clone(),
+        tests: config.models.tests.clone(),
+        patch: config.models.patch.clone(),
+        aliases: config.models.aliases.clone(),
+    }
+}
+
+fn provider_summary(config: &ProjectConfig) -> ProvidersData {
     let mut providers = Vec::new();
     if !config.providers.entries.contains_key("lmstudio") {
-        providers.push(serde_json::json!({
-            "name": "lmstudio",
-            "kind": "openai-compatible",
-            "base_url": "http://127.0.0.1:1234/v1",
-            "api_key_env": "",
-            "api_key_present": false,
-            "headers_count": 0,
-            "implicit": true
-        }));
+        providers.push(ProviderItemData {
+            name: "lmstudio".to_string(),
+            kind: "openai-compatible".to_string(),
+            base_url: "http://127.0.0.1:1234/v1".to_string(),
+            api_key_env: String::new(),
+            api_key_present: false,
+            headers_count: 0,
+            implicit: true,
+        });
     }
     for (name, provider) in &config.providers.entries {
-        providers.push(serde_json::json!({
-            "name": name,
-            "kind": provider.kind,
-            "base_url": provider.base_url,
-            "api_key_env": provider.api_key_env,
-            "api_key_present": !provider.api_key_env.is_empty()
+        providers.push(ProviderItemData {
+            name: name.clone(),
+            kind: provider.kind.clone(),
+            base_url: provider.base_url.clone(),
+            api_key_env: provider.api_key_env.clone(),
+            api_key_present: !provider.api_key_env.is_empty()
                 && std::env::var(&provider.api_key_env)
                     .map(|value| !value.is_empty())
                     .unwrap_or(false),
-            "headers_count": provider.headers.len(),
-            "implicit": false
-        }));
+            headers_count: provider.headers.len(),
+            implicit: false,
+        });
     }
-    serde_json::json!({
-        "default": config.providers.default,
-        "providers": providers
-    })
+    ProvidersData {
+        default: config.providers.default.clone(),
+        providers,
+    }
 }
 
-fn print_model_route(route: &str, selected: &str, config: &ProjectConfig) {
+fn print_model_route(
+    reporter: &mut Reporter,
+    route: &str,
+    selected: &str,
+    config: &ProjectConfig,
+) -> Result<()> {
     if selected.is_empty() {
-        println!("  {route}: (not configured)");
+        reporter.human(&format!("  {route}: (not configured)"))?;
     } else {
-        println!(
+        reporter.human(&format!(
             "  {route}: {} -> {}",
             selected,
             resolve_model_alias(config, selected)
-        );
+        ))?;
     }
+    Ok(())
 }
 
 fn installed_check(id: &str, relative: &str, message: &str) -> Check {
@@ -2837,7 +3644,7 @@ fn shell_mkdir_p(_path: &Path) -> Result<()> {
     ))
 }
 
-fn install_claude(copy: bool, force: bool) -> Result<()> {
+fn install_claude(copy: bool, force: bool) -> Result<Vec<InstallActionData>> {
     let cwd = std::env::current_dir()?;
     let harness = harness_root()?;
     let commands_target = cwd.join(".claude/commands");
@@ -2851,20 +3658,25 @@ fn install_claude(copy: bool, force: bool) -> Result<()> {
         force,
     )?;
     install_directory_contents(&harness.join("skills"), &skills_target, copy, force)?;
-    println!(
-        "{} Claude commands into {}",
-        if copy { "copied" } else { "linked" },
-        commands_target.display()
-    );
-    println!(
-        "{} Rebotica skills into {}",
-        if copy { "copied" } else { "linked" },
-        skills_target.display()
-    );
-    Ok(())
+    Ok(vec![
+        InstallActionData {
+            action: if copy { "copied" } else { "linked" }.to_string(),
+            subject: "Claude commands".to_string(),
+            path: commands_target.display().to_string(),
+        },
+        InstallActionData {
+            action: if copy { "copied" } else { "linked" }.to_string(),
+            subject: "Rebotica skills".to_string(),
+            path: skills_target.display().to_string(),
+        },
+    ])
 }
 
-fn install_codex(copy: bool, force: bool, target_dir: Option<String>) -> Result<()> {
+fn install_codex(
+    copy: bool,
+    force: bool,
+    target_dir: Option<String>,
+) -> Result<Vec<InstallActionData>> {
     let cwd = std::env::current_dir()?;
     let harness = harness_root()?;
     let skills_target = target_dir
@@ -2872,22 +3684,24 @@ fn install_codex(copy: bool, force: bool, target_dir: Option<String>) -> Result<
         .unwrap_or_else(|| cwd.join(".agents/skills"));
     ensure_dir(&skills_target)?;
     install_directory_contents(&harness.join("skills"), &skills_target, copy, force)?;
-    println!(
-        "{} Rebotica skills into {}",
-        if copy { "copied" } else { "linked" },
-        skills_target.display()
-    );
-    Ok(())
+    Ok(vec![InstallActionData {
+        action: if copy { "copied" } else { "linked" }.to_string(),
+        subject: "Rebotica skills".to_string(),
+        path: skills_target.display().to_string(),
+    }])
 }
 
-fn install_github(force: bool) -> Result<()> {
+fn install_github(force: bool) -> Result<Vec<InstallActionData>> {
     let cwd = std::env::current_dir()?;
     let harness = harness_root()?;
     let github_target = cwd.join(".github");
     ensure_dir(&github_target)?;
     install_directory_contents(&harness.join("github"), &github_target, true, force)?;
-    println!("copied GitHub assets into {}", github_target.display());
-    Ok(())
+    Ok(vec![InstallActionData {
+        action: "copied".to_string(),
+        subject: "GitHub assets".to_string(),
+        path: github_target.display().to_string(),
+    }])
 }
 
 fn harness_root() -> Result<PathBuf> {
@@ -3556,7 +4370,7 @@ mod tests {
         )
         .unwrap();
 
-        score(ScoreArgs {
+        score_data(ScoreArgs {
             run_id: "run-1".to_string(),
             rating: Some(5),
             accepted: true,
@@ -3701,12 +4515,11 @@ models:
     fn provider_summary_includes_implicit_lmstudio_default() {
         let summary = provider_summary(&ProjectConfig::default());
 
-        assert_eq!(summary["default"], "lmstudio");
-        let providers = summary["providers"].as_array().unwrap();
-        assert!(providers.iter().any(|provider| {
-            provider["name"] == "lmstudio"
-                && provider["base_url"] == "http://127.0.0.1:1234/v1"
-                && provider["implicit"] == true
+        assert_eq!(summary.default, "lmstudio");
+        assert!(summary.providers.iter().any(|provider| {
+            provider.name == "lmstudio"
+                && provider.base_url == "http://127.0.0.1:1234/v1"
+                && provider.implicit
         }));
     }
 

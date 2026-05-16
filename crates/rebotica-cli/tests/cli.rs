@@ -1,7 +1,10 @@
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TempDir {
@@ -68,6 +71,35 @@ fn run_in_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process:
         command.env(key, value);
     }
     command.output().expect("rbtc command should run")
+}
+
+fn one_shot_models_server(models: &[&str]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    let body = format!(
+        r#"{{"data":[{}]}}"#,
+        models
+            .iter()
+            .map(|model| format!(r#"{{"id":"{model}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test server should accept");
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test server should respond");
+    });
+    format!("http://{addr}/v1")
 }
 
 #[test]
@@ -237,7 +269,11 @@ fn skills_list_reports_canonical_and_project_skills() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let skills = json.as_array().unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "skills.list");
+    assert_eq!(json["command"], "skills list");
+    assert_eq!(json["ok"], true);
+    let skills = json["data"]["skills"].as_array().unwrap();
     assert!(skills.iter().any(|skill| {
         skill["id"] == "local-model-delegation" && skill["source"] == "canonical"
     }));
@@ -299,6 +335,67 @@ fn init_creates_project_config_and_refuses_accidental_overwrite() {
 }
 
 #[test]
+fn successful_parse_uses_clap_output_flags_not_raw_token_scan() {
+    let temp = TempDir::new("title-like-json-flag");
+    let home = temp.path().to_string_lossy().to_string();
+
+    let output = run_in_env(
+        temp.path(),
+        &["comment-card", "new", "--title=--json"],
+        &[("HOME", &home)],
+    );
+
+    assert!(
+        output.status.success(),
+        "comment-card new failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("created comment card:"));
+    assert!(!stdout.contains("\"rebotica\""));
+}
+
+#[test]
+fn init_json_emits_v1_envelope_with_written_paths() {
+    let temp = TempDir::new("init-json");
+
+    let output = run_in(temp.path(), &["init", "--json"]);
+
+    assert!(
+        output.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "init");
+    assert_eq!(json["command"], "init");
+    assert_eq!(json["ok"], true);
+    assert!(json["data"]["written"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|path| path.as_str().unwrap().ends_with(".rebotica.yml")));
+    assert_eq!(json["data"]["model_routes_empty"], true);
+}
+
+#[test]
+fn install_human_output_groups_actions_by_target() {
+    let temp = TempDir::new("install-human");
+
+    let output = run_in(temp.path(), &["install", "codex", "--copy"]);
+
+    assert!(
+        output.status.success(),
+        "install failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Installed codex adapter assets:"));
+    assert!(stdout.contains("  copied Rebotica skills into"));
+}
+
+#[test]
 fn providers_json_reports_implicit_lmstudio_without_network() {
     let temp = TempDir::new("providers");
 
@@ -310,8 +407,12 @@ fn providers_json_reports_implicit_lmstudio_without_network() {
         String::from_utf8_lossy(&output.stderr)
     );
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["default"], "lmstudio");
-    assert!(json["providers"]
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "providers");
+    assert_eq!(json["command"], "providers");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["default"], "lmstudio");
+    assert!(json["data"]["providers"]
         .as_array()
         .unwrap()
         .iter()
@@ -320,6 +421,25 @@ fn providers_json_reports_implicit_lmstudio_without_network() {
                 && provider["base_url"] == "http://127.0.0.1:1234/v1"
                 && provider["implicit"] == true
         }));
+}
+
+#[test]
+fn providers_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
+    let temp = TempDir::new("providers-quiet");
+
+    let output = run_in(temp.path(), &["providers", "--quiet"]);
+
+    assert!(
+        output.status.success(),
+        "providers failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "providers");
 }
 
 #[test]
@@ -490,7 +610,10 @@ fn help_flag_bypasses_json_envelope() {
 
     assert!(output.status.success(), "exit code should be 0 for --help");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: rbtc"), "help text should be on stdout");
+    assert!(
+        stdout.contains("Usage: rbtc"),
+        "help text should be on stdout"
+    );
     assert!(
         !stdout.contains("\"rebotica\""),
         "no envelope should be emitted for --help, got: {stdout}"
@@ -503,9 +626,15 @@ fn version_flag_bypasses_json_envelope() {
 
     let output = run_in(temp.path(), &["--quiet", "--version"]);
 
-    assert!(output.status.success(), "exit code should be 0 for --version");
+    assert!(
+        output.status.success(),
+        "exit code should be 0 for --version"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("rbtc "), "version text should be on stdout");
+    assert!(
+        stdout.starts_with("rbtc "),
+        "version text should be on stdout"
+    );
     assert!(
         !stdout.contains("\"rebotica\""),
         "no envelope should be emitted for --version, got: {stdout}"
@@ -525,6 +654,28 @@ fn quiet_parse_failure_emits_error_envelope_no_stderr_noise() {
     assert_eq!(json["kind"], "error");
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "usage");
+}
+
+#[test]
+fn quiet_migrated_command_failure_emits_command_error_envelope() {
+    let temp = TempDir::new("quiet-score-failure");
+
+    let output = run_in(
+        temp.path(),
+        &["score", "missing-run", "--rating", "6", "--quiet"],
+    );
+
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "score");
+    assert_eq!(json["command"], "score");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "usage");
+    assert_eq!(json["data"], serde_json::json!({}));
 }
 
 #[test]
@@ -599,4 +750,143 @@ models:
     assert!(config.contains("default: local-model"));
     assert!(config.contains("review: local-model"));
     assert!(config.contains("local-model: raw-local-model"));
+}
+
+#[test]
+fn models_configure_detect_json_emits_configure_envelope() {
+    let temp = TempDir::new("models-configure-detect-json");
+    fs::write(
+        temp.path().join(".rebotica.yml"),
+        r#"
+project:
+  name: sample
+providers:
+  default: local
+models:
+  default: ""
+  review: ""
+  explain: ""
+  tests: ""
+  patch: ""
+  aliases: {}
+"#,
+    )
+    .unwrap();
+    let base_url = one_shot_models_server(&["detected-model"]);
+
+    let output = run_in(
+        temp.path(),
+        &[
+            "models",
+            "configure",
+            "--detect",
+            "--base-url",
+            &base_url,
+            "--json",
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "models configure failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "models.configure");
+    assert_eq!(json["command"], "models configure");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["status"], "configured");
+    assert_eq!(json["data"]["source"], "detected");
+    assert_eq!(json["data"]["model"], "detected-model");
+}
+
+#[test]
+fn models_configure_detect_json_no_models_emits_error_envelope() {
+    let temp = TempDir::new("models-configure-detect-no-models-json");
+    fs::write(
+        temp.path().join(".rebotica.yml"),
+        r#"
+project:
+  name: sample
+providers:
+  default: local
+models:
+  default: ""
+  review: ""
+  explain: ""
+  tests: ""
+  patch: ""
+  aliases: {}
+"#,
+    )
+    .unwrap();
+    let base_url = one_shot_models_server(&[]);
+
+    let output = run_in(
+        temp.path(),
+        &[
+            "models",
+            "configure",
+            "--detect",
+            "--base-url",
+            &base_url,
+            "--json",
+        ],
+    );
+
+    assert!(!output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "models.configure");
+    assert_eq!(json["command"], "models configure");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "provider_unavailable");
+    assert_eq!(json["error"]["message"], "provider returned no models");
+    assert_eq!(json["data"]["status"], "no_models");
+}
+
+#[test]
+fn comment_card_list_json_emits_nested_command_envelope() {
+    let temp = TempDir::new("comment-card-list-json");
+
+    let home = temp.path().to_string_lossy().to_string();
+    let created = run_in_env(
+        temp.path(),
+        &[
+            "comment-card",
+            "new",
+            "--title",
+            "Review needs clearer next steps",
+        ],
+        &[("HOME", &home)],
+    );
+    assert!(
+        created.status.success(),
+        "comment-card new failed: {}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+
+    let output = run_in_env(
+        temp.path(),
+        &["comment-card", "list", "--json"],
+        &[("HOME", &home)],
+    );
+
+    assert!(
+        output.status.success(),
+        "comment-card list failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "comment-card.list");
+    assert_eq!(json["command"], "comment-card list");
+    assert_eq!(json["ok"], true);
+    assert!(json["data"]["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|card| card["status"] == "pending"
+            && card["title"] == "Review needs clearer next steps"));
 }
