@@ -15,7 +15,7 @@ Legacy commands that have not been migrated to envelopes yet keep their existing
 | `provider_server_error` | 11 | Provider was reached but returned a 5xx or an unparseable response. | Retry after backoff; surface provider details if it persists. |
 | `provider_client_error` | 12 | Provider rejected the request with HTTP 4xx. | Do not retry unchanged; fix auth, model name, or malformed input. |
 | `guard_rejected` | 20 | A policy or safety guard rejected the requested operation. | Do not retry unchanged; ask for review or narrower scope. |
-| `patch_invalid` | 21 | A patch or patch-like output is malformed or cannot be accepted. | Ask for regeneration or manual repair before applying. |
+| `output_invalid` | 21 | Worker output failed to validate against the mode's declared schema. | Ask for regeneration or schema-compliant worker output before consuming. |
 | `over_limit` | 22 | The requested operation exceeds configured size or safety limits. | Ask for a smaller scope or explicit limit adjustment. |
 | `cancelled` | 130 | The command was interrupted by cancellation, such as Ctrl-C. | Treat as user-initiated cancellation, not a system failure. |
 

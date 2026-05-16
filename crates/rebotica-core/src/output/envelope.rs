@@ -37,7 +37,7 @@ pub enum ErrorCode {
     ProviderServerError,
     ProviderClientError,
     GuardRejected,
-    PatchInvalid,
+    OutputInvalid,
     OverLimit,
     Cancelled,
     Internal,
@@ -53,7 +53,7 @@ impl ErrorCode {
             Self::ProviderServerError,
             Self::ProviderClientError,
             Self::GuardRejected,
-            Self::PatchInvalid,
+            Self::OutputInvalid,
             Self::OverLimit,
             Self::Cancelled,
         ]
@@ -68,7 +68,7 @@ impl ErrorCode {
             Self::ProviderServerError => 11,
             Self::ProviderClientError => 12,
             Self::GuardRejected => 20,
-            Self::PatchInvalid => 21,
+            Self::OutputInvalid => 21,
             Self::OverLimit => 22,
             Self::Cancelled => 130,
         }
@@ -273,7 +273,7 @@ mod tests {
         assert_eq!(ErrorCode::ProviderServerError.exit_code(), 11);
         assert_eq!(ErrorCode::ProviderClientError.exit_code(), 12);
         assert_eq!(ErrorCode::GuardRejected.exit_code(), 20);
-        assert_eq!(ErrorCode::PatchInvalid.exit_code(), 21);
+        assert_eq!(ErrorCode::OutputInvalid.exit_code(), 21);
         assert_eq!(ErrorCode::OverLimit.exit_code(), 22);
         assert_eq!(ErrorCode::Cancelled.exit_code(), 130);
     }
@@ -290,7 +290,7 @@ mod tests {
                 ErrorCode::ProviderServerError,
                 ErrorCode::ProviderClientError,
                 ErrorCode::GuardRejected,
-                ErrorCode::PatchInvalid,
+                ErrorCode::OutputInvalid,
                 ErrorCode::OverLimit,
                 ErrorCode::Cancelled,
             ]
