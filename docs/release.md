@@ -2,6 +2,21 @@
 
 Rebotica's first public distribution should stay boring: a tagged source release, a source-building Homebrew tap formula, and a local install smoke harness that proves the installed shim can find its runtime assets.
 
+## Unreleased Notes
+
+- `rbtc doctor --json` now emits the v1 Rebotica envelope. The previous raw checks array is preserved under `data`; consumers should read `rebotica`, `kind`, `ok`, `data`, and `error` from the envelope.
+- `--json` is now a global flag, so existing placements such as `rbtc doctor --json` continue to parse while `rbtc --json doctor` is also accepted. `--quiet` and `REBOTICA_QUIET` imply JSON mode for envelope output.
+- `--help` and `--version` always print human-readable text and exit 0, even with `--json` or `--quiet` set. These are not errors and do not produce envelopes.
+
+### Partial migration window
+
+Only `doctor` is migrated to the v1 envelope contract in this release. Other commands still emit the same human or raw-JSON output they did before:
+
+- `rbtc --json models|providers|skills list|models configure` emits the legacy raw shape (not an envelope). Subprocess consumers should check `rebotica == "v1"` to distinguish envelope output from legacy output.
+- `rbtc --quiet run review|explain|tests|patch` still writes the post-run footer to stderr. Quiet semantics for non-migrated commands are undefined and will be honored as each command is migrated.
+
+Migration of the remaining commands is tracked in issue #16's checklist.
+
 ## Local Install Harness
 
 Run:
