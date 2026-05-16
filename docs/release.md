@@ -4,18 +4,33 @@ Rebotica's first public distribution should stay boring: a tagged source release
 
 ## Unreleased Notes
 
-- `rbtc doctor --json` now emits the v1 Rebotica envelope. The previous raw checks array is preserved under `data`; consumers should read `rebotica`, `kind`, `ok`, `data`, and `error` from the envelope.
+- JSON-mode state commands now emit the v1 Rebotica envelope; consumers should read `rebotica`, `kind`, `ok`, `data`, and `error` from the envelope.
 - `--json` is now a global flag, so existing placements such as `rbtc doctor --json` continue to parse while `rbtc --json doctor` is also accepted. `--quiet` and `REBOTICA_QUIET` imply JSON mode for envelope output.
 - `--help` and `--version` always print human-readable text and exit 0, even with `--json` or `--quiet` set. These are not errors and do not produce envelopes.
 
-### Partial migration window
+### Envelope contract
 
-Only `doctor` is migrated to the v1 envelope contract in this release. Other commands still emit the same human or raw-JSON output they did before:
+All state and diagnostic commands now emit the v1 envelope contract in JSON mode:
 
-- `rbtc --json models|providers|skills list|models configure` emits the legacy raw shape (not an envelope). Subprocess consumers should check `rebotica == "v1"` to distinguish envelope output from legacy output.
-- `rbtc --quiet run review|explain|tests|patch` still writes the post-run footer to stderr. Quiet semantics for non-migrated commands are undefined and will be honored as each command is migrated.
+- `doctor`
+- `providers`
+- `models`
+- `models configure`
+- `init`
+- `install`
+- `skills list`
+- `skills show`
+- `score`
+- `scorecards`
+- `comment-card *`
+- `retro`
+- `health`
+- `smoke`
+- `guard-diff`
 
-Migration of the remaining commands is tracked in issue #16's checklist.
+The exit-code taxonomy is final and documented in [exit-codes.md](exit-codes.md).
+
+The only commands not yet on the envelope contract are `run review`, `run explain`, `run tests`, and `run patch`. They are intentionally deferred to issue #5, the `run.*` plugin-host rewrite.
 
 ## Local Install Harness
 
