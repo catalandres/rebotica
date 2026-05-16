@@ -2,7 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use rebotica_core::output::{
-    CodedCommandError, EmptyData, Envelope, EnvelopeError, ErrorCode, Reporter, ReporterMode,
+    env_truthy, CodedCommandError, EmptyData, Envelope, EnvelopeError, ErrorCode, Reporter,
+    ReporterMode,
 };
 use rebotica_core::{
     model_for_mode, parse_allowed_files_from_envelope, parse_forbidden_files_from_envelope,
@@ -786,12 +787,6 @@ fn reporter_mode_from_args_and_env_for_parse_error(args: &[OsString]) -> Reporte
         }
     }
     ReporterMode::from_flags(json, quiet)
-}
-
-fn env_truthy(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
 }
 
 fn command_path(cli: &Cli) -> String {
@@ -1743,7 +1738,9 @@ fn print_init_report(reporter: &mut Reporter, data: &InitData) -> Result<()> {
         reporter.human(&format!("created {path}"))?;
     }
     for path in &data.skipped {
-        reporter.human(&format!("created {path}"))?;
+        reporter.human(&format!(
+            "skipped {path} (already exists; use --force to overwrite)"
+        ))?;
     }
     if data.model_routes_empty {
         reporter.human("")?;
@@ -2252,10 +2249,14 @@ fn resolve_skill(cwd: &Path, reference: &str) -> Result<ResolvedSkill> {
         .collect::<Vec<_>>();
 
     match matches.len() {
-        0 => Err(anyhow!("skill not found: {reference}")),
+        0 => Err(coded_error(
+            ErrorCode::Usage,
+            format!("skill not found: {reference}"),
+        )),
         1 => Ok(matches.remove(0)),
-        _ => Err(anyhow!(
-            "ambiguous skill '{reference}'. Use canonical:{id} or project:{id}."
+        _ => Err(coded_error(
+            ErrorCode::Usage,
+            format!("ambiguous skill '{reference}'. Use canonical:{id} or project:{id}."),
         )),
     }
 }
@@ -2263,16 +2264,17 @@ fn resolve_skill(cwd: &Path, reference: &str) -> Result<ResolvedSkill> {
 fn parse_skill_reference(reference: &str) -> Result<(Option<String>, String)> {
     let trimmed = reference.trim();
     if trimmed.is_empty() {
-        return Err(anyhow!("skill id must not be empty"));
+        return Err(coded_error(ErrorCode::Usage, "skill id must not be empty"));
     }
     if let Some((source, id)) = trimmed.split_once(':') {
         if source != "canonical" && source != "project" {
-            return Err(anyhow!(
-                "unknown skill source '{source}'. Use canonical:<id> or project:<id>."
+            return Err(coded_error(
+                ErrorCode::Usage,
+                format!("unknown skill source '{source}'. Use canonical:<id> or project:<id>."),
             ));
         }
         if id.is_empty() {
-            return Err(anyhow!("skill id must not be empty"));
+            return Err(coded_error(ErrorCode::Usage, "skill id must not be empty"));
         }
         return Ok((Some(source.to_string()), id.to_string()));
     }
@@ -2960,7 +2962,10 @@ fn show_comment_card(card_id: &str) -> Result<CommentCardShowData> {
 fn move_comment_card(card_id: &str, from: &str, to: &str) -> Result<CommentCardMoveData> {
     let source = comment_card_status_dir(from).join(format!("{card_id}.md"));
     if !source.exists() {
-        return Err(anyhow!("comment card not found in {from}: {card_id}"));
+        return Err(coded_error(
+            ErrorCode::Usage,
+            format!("comment card not found in {from}: {card_id}"),
+        ));
     }
     let target_dir = comment_card_status_dir(to);
     fs::create_dir_all(&target_dir)?;
@@ -2997,8 +3002,9 @@ fn configure_comment_card_consent(args: CommentCardConsentArgs) -> Result<Commen
 fn submit_comment_card(args: CommentCardSubmitArgs) -> Result<CommentCardSubmitData> {
     let settings = read_settings()?;
     if !settings.comment_cards.github_submit_consent {
-        return Err(anyhow!(
-            "GitHub comment-card submission needs consent. Run: rbtc comment-card consent --allow-github"
+        return Err(coded_error(
+            ErrorCode::Config,
+            "GitHub comment-card submission needs consent. Run: rbtc comment-card consent --allow-github",
         ));
     }
     let repo = args
@@ -3006,7 +3012,10 @@ fn submit_comment_card(args: CommentCardSubmitArgs) -> Result<CommentCardSubmitD
         .unwrap_or_else(|| settings.comment_cards.default_repo.clone());
     let path = comment_card_status_dir("pending").join(format!("{}.md", args.card_id));
     if !path.exists() {
-        return Err(anyhow!("pending comment card not found: {}", args.card_id));
+        return Err(coded_error(
+            ErrorCode::Usage,
+            format!("pending comment card not found: {}", args.card_id),
+        ));
     }
     let title = comment_card_field(&path, "title")?
         .filter(|title| !title.is_empty())
@@ -3119,7 +3128,10 @@ fn find_comment_card(card_id: &str) -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    Err(anyhow!("comment card not found: {card_id}"))
+    Err(coded_error(
+        ErrorCode::Usage,
+        format!("comment card not found: {card_id}"),
+    ))
 }
 
 fn pending_comment_card_count() -> Result<usize> {
@@ -3196,7 +3208,10 @@ fn retrospective(
     let mut reporter = Reporter::from_mode(reporter_mode);
     let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
     if !run_dir.exists() {
-        return Err(anyhow!("run not found: {}", args.run_id));
+        return Err(coded_error(
+            ErrorCode::Config,
+            format!("run not found: {}", args.run_id),
+        ));
     }
     let output = run_dir.join("retrospective.md");
     let written = !output.exists() || args.force;

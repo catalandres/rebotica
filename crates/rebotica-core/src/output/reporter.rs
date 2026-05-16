@@ -20,12 +20,6 @@ impl Reporter {
         Self::from_mode(ReporterMode::from_flags(json, quiet))
     }
 
-    pub fn from_env_and_flags(json: bool, quiet: bool) -> Self {
-        let json = json || env_truthy("REBOTICA_JSON");
-        let quiet = quiet || env_truthy("REBOTICA_QUIET");
-        Self::from_flags(json, quiet)
-    }
-
     pub fn from_mode(mode: ReporterMode) -> Self {
         Self {
             mode,
@@ -105,7 +99,7 @@ impl ReporterMode {
     }
 }
 
-fn env_truthy(name: &str) -> bool {
+pub fn env_truthy(name: &str) -> bool {
     std::env::var(name)
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false)
@@ -193,56 +187,5 @@ mod tests {
 
         assert_eq!(reporter.mode(), ReporterMode::Quiet);
         assert!(reporter.is_json());
-    }
-
-    #[test]
-    fn reporter_from_env_respects_rebotica_json() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _json = EnvGuard::set("REBOTICA_JSON", "yes");
-        let _quiet = EnvGuard::clear("REBOTICA_QUIET");
-        let reporter = Reporter::from_env_and_flags(false, false);
-
-        assert_eq!(reporter.mode(), ReporterMode::Json);
-    }
-
-    #[test]
-    fn reporter_from_env_respects_rebotica_quiet() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _json = EnvGuard::clear("REBOTICA_JSON");
-        let _quiet = EnvGuard::set("REBOTICA_QUIET", "true");
-        let reporter = Reporter::from_env_and_flags(false, false);
-
-        assert_eq!(reporter.mode(), ReporterMode::Quiet);
-    }
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    struct EnvGuard {
-        key: &'static str,
-        original: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let original = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, original }
-        }
-
-        fn clear(key: &'static str) -> Self {
-            let original = std::env::var(key).ok();
-            std::env::remove_var(key);
-            Self { key, original }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.original {
-                std::env::set_var(self.key, value);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
     }
 }

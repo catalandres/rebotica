@@ -74,6 +74,17 @@ fn run_in_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process:
     command.output().expect("rbtc command should run")
 }
 
+fn assert_json_error(output: &std::process::Output, exit_code: i32, error_code: &str) -> Value {
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(exit_code));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], error_code);
+    json
+}
+
 fn run_git(cwd: &Path, args: &[&str]) {
     let output = Command::new("git")
         .current_dir(cwd)
@@ -451,6 +462,34 @@ fn init_creates_project_config_and_refuses_accidental_overwrite() {
     assert!(!second.status.success());
     assert_eq!(second.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&second.stderr).contains("Use --force to overwrite"));
+}
+
+#[test]
+fn init_human_output_marks_existing_paths_as_skipped() {
+    let temp = TempDir::new("init-skipped");
+    fs::create_dir_all(temp.path().join(".rebotica/tasks")).unwrap();
+    fs::create_dir_all(temp.path().join(".rebotica/runs")).unwrap();
+
+    let output = run_in(temp.path(), &["init"]);
+
+    assert!(
+        output.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout
+        .lines()
+        .any(|line| { line.starts_with("skipped ") && line.contains(".rebotica/tasks") }));
+    assert!(stdout
+        .lines()
+        .any(|line| { line.starts_with("skipped ") && line.contains(".rebotica/runs") }));
+    assert!(!stdout
+        .lines()
+        .any(|line| { line.starts_with("created ") && line.contains(".rebotica/tasks") }));
+    assert!(!stdout
+        .lines()
+        .any(|line| { line.starts_with("created ") && line.contains(".rebotica/runs") }));
 }
 
 #[test]
@@ -1073,6 +1112,91 @@ fn quiet_migrated_command_failure_emits_command_error_envelope() {
     assert_eq!(json["ok"], false);
     assert_eq!(json["error"]["code"], "usage");
     assert_eq!(json["data"], serde_json::json!({}));
+}
+
+#[test]
+fn migrated_classifiable_failures_emit_typed_json_errors() {
+    let temp = TempDir::new("typed-json-errors");
+    let home = temp.path().to_string_lossy().to_string();
+    let consent = run_in_env(
+        temp.path(),
+        &["comment-card", "consent", "--allow-github"],
+        &[("HOME", &home)],
+    );
+    assert!(
+        consent.status.success(),
+        "comment-card consent failed: {}",
+        String::from_utf8_lossy(&consent.stderr)
+    );
+
+    for (args, exit_code, error_code, kind, message) in [
+        (
+            &["skills", "show", "missing", "--json"][..],
+            2,
+            "usage",
+            "skills.show",
+            "skill not found: missing",
+        ),
+        (
+            &["skills", "show", "workspace:domain", "--json"][..],
+            2,
+            "usage",
+            "skills.show",
+            "unknown skill source 'workspace'. Use canonical:<id> or project:<id>.",
+        ),
+        (
+            &["retro", "missing-run", "--json"][..],
+            3,
+            "config",
+            "retro",
+            "run not found: missing-run",
+        ),
+        (
+            &["comment-card", "show", "missing-card", "--json"][..],
+            2,
+            "usage",
+            "comment-card.show",
+            "comment card not found: missing-card",
+        ),
+        (
+            &["comment-card", "dismiss", "missing-card", "--json"][..],
+            2,
+            "usage",
+            "comment-card.dismiss",
+            "comment card not found in pending: missing-card",
+        ),
+        (
+            &["comment-card", "submit", "missing-card", "--json"][..],
+            2,
+            "usage",
+            "comment-card.submit",
+            "pending comment card not found: missing-card",
+        ),
+    ] {
+        let output = run_in_env(temp.path(), args, &[("HOME", &home)]);
+        let json = assert_json_error(&output, exit_code, error_code);
+        assert_eq!(json["kind"], kind);
+        assert_eq!(json["error"]["message"], message);
+    }
+}
+
+#[test]
+fn comment_card_submit_without_consent_json_is_config_error() {
+    let temp = TempDir::new("comment-card-submit-no-consent");
+    let home = temp.path().to_string_lossy().to_string();
+
+    let output = run_in_env(
+        temp.path(),
+        &["comment-card", "submit", "missing-card", "--json"],
+        &[("HOME", &home)],
+    );
+
+    let json = assert_json_error(&output, 3, "config");
+    assert_eq!(json["kind"], "comment-card.submit");
+    assert_eq!(
+        json["error"]["message"],
+        "GitHub comment-card submission needs consent. Run: rbtc comment-card consent --allow-github"
+    );
 }
 
 #[test]
