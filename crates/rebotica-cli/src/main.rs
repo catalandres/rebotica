@@ -555,7 +555,7 @@ async fn main() {
         Ok(cli) => {
             let reporter_mode = reporter_mode_from_cli_and_env(&cli);
             let command_path = command_path(&cli);
-            match run_until_done_or_canceled(cli, reporter_mode, started_at, &command_path).await {
+            match run_until_done_or_cancelled(cli, reporter_mode, started_at, &command_path).await {
                 Ok(code) => std::process::exit(code),
                 Err(error) => {
                     let code = error_code_for(&error);
@@ -603,7 +603,7 @@ async fn main() {
     }
 }
 
-async fn run_until_done_or_canceled(
+async fn run_until_done_or_cancelled(
     cli: Cli,
     reporter_mode: ReporterMode,
     started_at: DateTime<Utc>,
@@ -613,7 +613,7 @@ async fn run_until_done_or_canceled(
         result = run(cli, reporter_mode, started_at) => result,
         signal = tokio::signal::ctrl_c() => {
             signal.context("failed to listen for cancellation signal")?;
-            let message = "operation canceled";
+            let message = "operation cancelled";
             if reporter_mode == ReporterMode::Human {
                 eprintln!("rbtc: {message}");
             } else {
@@ -621,11 +621,11 @@ async fn run_until_done_or_canceled(
                     reporter_mode,
                     command_path,
                     started_at,
-                    ErrorCode::Canceled,
+                    ErrorCode::Cancelled,
                     message.to_string(),
                 );
             }
-            Ok(ErrorCode::Canceled.exit_code())
+            Ok(ErrorCode::Cancelled.exit_code())
         }
     }
 }

@@ -16,7 +16,7 @@ Legacy commands that have not been migrated to envelopes yet keep their existing
 | `guard_rejected` | 20 | A policy or safety guard rejected the requested operation. | Do not retry unchanged; ask for review or narrower scope. |
 | `patch_invalid` | 21 | A patch or patch-like output is malformed or cannot be accepted. | Ask for regeneration or manual repair before applying. |
 | `over_limit` | 22 | The requested operation exceeds configured size or safety limits. | Ask for a smaller scope or explicit limit adjustment. |
-| `canceled` | 130 | The command was interrupted by cancellation, such as Ctrl-C. | Treat as user-initiated cancellation, not a system failure. |
+| `cancelled` | 130 | The command was interrupted by cancellation, such as Ctrl-C. | Treat as user-initiated cancellation, not a system failure. |
 
 ## For Contributors
 

@@ -891,7 +891,7 @@ models:
 
 #[cfg(unix)]
 #[test]
-fn json_command_cancellation_emits_canceled_envelope_and_exit_code() {
+fn json_command_cancellation_emits_cancelled_envelope_and_exit_code() {
     let temp = TempDir::new("cancel-json");
     let (base_url, accepted_rx) = blocking_models_server();
 
@@ -924,8 +924,8 @@ fn json_command_cancellation_emits_canceled_envelope_and_exit_code() {
     assert_eq!(json["kind"], "error");
     assert_eq!(json["command"], "models");
     assert_eq!(json["ok"], false);
-    assert_eq!(json["error"]["code"], "canceled");
-    assert_eq!(json["error"]["message"], "operation canceled");
+    assert_eq!(json["error"]["code"], "cancelled");
+    assert_eq!(json["error"]["message"], "operation cancelled");
 }
 
 #[test]

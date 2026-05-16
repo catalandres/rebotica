@@ -38,7 +38,7 @@ pub enum ErrorCode {
     GuardRejected,
     PatchInvalid,
     OverLimit,
-    Canceled,
+    Cancelled,
     Internal,
 }
 
@@ -53,7 +53,7 @@ impl ErrorCode {
             Self::GuardRejected,
             Self::PatchInvalid,
             Self::OverLimit,
-            Self::Canceled,
+            Self::Cancelled,
         ]
     }
 
@@ -67,7 +67,7 @@ impl ErrorCode {
             Self::GuardRejected => 20,
             Self::PatchInvalid => 21,
             Self::OverLimit => 22,
-            Self::Canceled => 130,
+            Self::Cancelled => 130,
         }
     }
 }
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(ErrorCode::GuardRejected.exit_code(), 20);
         assert_eq!(ErrorCode::PatchInvalid.exit_code(), 21);
         assert_eq!(ErrorCode::OverLimit.exit_code(), 22);
-        assert_eq!(ErrorCode::Canceled.exit_code(), 130);
+        assert_eq!(ErrorCode::Cancelled.exit_code(), 130);
     }
 
     #[test]
@@ -287,23 +287,23 @@ mod tests {
                 ErrorCode::GuardRejected,
                 ErrorCode::PatchInvalid,
                 ErrorCode::OverLimit,
-                ErrorCode::Canceled,
+                ErrorCode::Cancelled,
             ]
         );
     }
 
     #[test]
-    fn canceled_error_code_serializes_as_snake_case() {
+    fn cancelled_error_code_serializes_as_snake_case() {
         let envelope = Envelope::builder("error")
             .error(EnvelopeError {
-                code: ErrorCode::Canceled,
-                message: "operation canceled".to_string(),
+                code: ErrorCode::Cancelled,
+                message: "operation cancelled".to_string(),
                 details: None,
             })
             .build();
 
         let value = serde_json::to_value(envelope).unwrap();
-        assert_eq!(value["error"]["code"], "canceled");
+        assert_eq!(value["error"]["code"], "cancelled");
     }
 
     #[test]
