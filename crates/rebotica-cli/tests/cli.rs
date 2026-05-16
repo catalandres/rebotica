@@ -3,9 +3,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 struct TempDir {
     path: PathBuf,
@@ -100,6 +101,43 @@ fn one_shot_models_server(models: &[&str]) -> String {
             .expect("test server should respond");
     });
     format!("http://{addr}/v1")
+}
+
+#[cfg(unix)]
+fn blocking_models_server() -> (String, mpsc::Receiver<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test server should accept");
+        let _ = accepted_tx.send(());
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer);
+        thread::sleep(Duration::from_secs(30));
+    });
+    (format!("http://{addr}/v1"), accepted_rx)
+}
+
+fn wait_for_child(mut child: std::process::Child) -> std::process::Output {
+    let started = SystemTime::now();
+    loop {
+        if child
+            .try_wait()
+            .expect("child status should be readable")
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .expect("child output should be readable");
+        }
+        assert!(
+            started.elapsed().unwrap_or_default() < Duration::from_secs(10),
+            "child did not exit before timeout"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[test]
@@ -331,6 +369,7 @@ fn init_creates_project_config_and_refuses_accidental_overwrite() {
 
     let second = run_in(temp.path(), &["init"]);
     assert!(!second.status.success());
+    assert_eq!(second.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&second.stderr).contains("Use --force to overwrite"));
 }
 
@@ -538,6 +577,7 @@ fn global_json_without_subcommand_emits_usage_error_envelope() {
     let output = run_in(temp.path(), &["--json"]);
 
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["rebotica"], "v1");
@@ -648,6 +688,7 @@ fn quiet_parse_failure_emits_error_envelope_no_stderr_noise() {
     let output = run_in(temp.path(), &["--quiet", "--definitely-not-a-command"]);
 
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["rebotica"], "v1");
@@ -666,6 +707,7 @@ fn quiet_migrated_command_failure_emits_command_error_envelope() {
     );
 
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
@@ -836,6 +878,7 @@ models:
     );
 
     assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(10));
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["rebotica"], "v1");
     assert_eq!(json["kind"], "models.configure");
@@ -844,6 +887,45 @@ models:
     assert_eq!(json["error"]["code"], "provider_unavailable");
     assert_eq!(json["error"]["message"], "provider returned no models");
     assert_eq!(json["data"]["status"], "no_models");
+}
+
+#[cfg(unix)]
+#[test]
+fn json_command_cancellation_emits_canceled_envelope_and_exit_code() {
+    let temp = TempDir::new("cancel-json");
+    let (base_url, accepted_rx) = blocking_models_server();
+
+    let child = rbtc()
+        .current_dir(temp.path())
+        .env("REBOTICA_HOME", harness_root())
+        .env_remove("REBOTICA_JSON")
+        .env_remove("REBOTICA_QUIET")
+        .args(["models", "--json", "--base-url", &base_url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("rbtc command should spawn");
+
+    accepted_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("provider request should reach test server");
+    let status = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill should run");
+    assert!(status.success(), "kill -INT should succeed");
+
+    let output = wait_for_child(child);
+
+    assert_eq!(output.status.code(), Some(130));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "error");
+    assert_eq!(json["command"], "models");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "canceled");
+    assert_eq!(json["error"]["message"], "operation canceled");
 }
 
 #[test]

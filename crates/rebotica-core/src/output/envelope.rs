@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
+use std::fmt;
 use std::time::Duration;
 
 const ENVELOPE_VERSION: &str = "v1";
@@ -26,7 +27,7 @@ pub struct EnvelopeError {
     pub details: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
@@ -34,8 +35,73 @@ pub enum ErrorCode {
     Config,
     ProviderUnavailable,
     ProviderError,
+    GuardRejected,
+    PatchInvalid,
+    OverLimit,
+    Canceled,
     Internal,
 }
+
+impl ErrorCode {
+    pub fn all() -> &'static [ErrorCode] {
+        &[
+            Self::Internal,
+            Self::Usage,
+            Self::Config,
+            Self::ProviderUnavailable,
+            Self::ProviderError,
+            Self::GuardRejected,
+            Self::PatchInvalid,
+            Self::OverLimit,
+            Self::Canceled,
+        ]
+    }
+
+    pub fn exit_code(self) -> i32 {
+        match self {
+            Self::Internal => 1,
+            Self::Usage => 2,
+            Self::Config => 3,
+            Self::ProviderUnavailable => 10,
+            Self::ProviderError => 11,
+            Self::GuardRejected => 20,
+            Self::PatchInvalid => 21,
+            Self::OverLimit => 22,
+            Self::Canceled => 130,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodedCommandError {
+    code: ErrorCode,
+    message: String,
+}
+
+impl CodedCommandError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for CodedCommandError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CodedCommandError {}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptyData;
@@ -193,6 +259,60 @@ mod tests {
 
         let value = serde_json::to_value(envelope).unwrap();
         assert!(value["error"].get("details").is_none());
+    }
+
+    #[test]
+    fn error_code_exit_codes_are_stable() {
+        assert_eq!(ErrorCode::Internal.exit_code(), 1);
+        assert_eq!(ErrorCode::Usage.exit_code(), 2);
+        assert_eq!(ErrorCode::Config.exit_code(), 3);
+        assert_eq!(ErrorCode::ProviderUnavailable.exit_code(), 10);
+        assert_eq!(ErrorCode::ProviderError.exit_code(), 11);
+        assert_eq!(ErrorCode::GuardRejected.exit_code(), 20);
+        assert_eq!(ErrorCode::PatchInvalid.exit_code(), 21);
+        assert_eq!(ErrorCode::OverLimit.exit_code(), 22);
+        assert_eq!(ErrorCode::Canceled.exit_code(), 130);
+    }
+
+    #[test]
+    fn error_code_all_lists_the_public_contract_order() {
+        assert_eq!(
+            ErrorCode::all(),
+            &[
+                ErrorCode::Internal,
+                ErrorCode::Usage,
+                ErrorCode::Config,
+                ErrorCode::ProviderUnavailable,
+                ErrorCode::ProviderError,
+                ErrorCode::GuardRejected,
+                ErrorCode::PatchInvalid,
+                ErrorCode::OverLimit,
+                ErrorCode::Canceled,
+            ]
+        );
+    }
+
+    #[test]
+    fn canceled_error_code_serializes_as_snake_case() {
+        let envelope = Envelope::builder("error")
+            .error(EnvelopeError {
+                code: ErrorCode::Canceled,
+                message: "operation canceled".to_string(),
+                details: None,
+            })
+            .build();
+
+        let value = serde_json::to_value(envelope).unwrap();
+        assert_eq!(value["error"]["code"], "canceled");
+    }
+
+    #[test]
+    fn coded_command_error_carries_code_and_message() {
+        let error = CodedCommandError::new(ErrorCode::Config, "invalid config");
+
+        assert_eq!(error.code(), ErrorCode::Config);
+        assert_eq!(error.message(), "invalid config");
+        assert_eq!(error.to_string(), "invalid config");
     }
 
     #[test]

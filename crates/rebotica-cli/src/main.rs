@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use rebotica_core::output::{
-    EmptyData, Envelope, EnvelopeError, ErrorCode, Reporter, ReporterMode,
+    CodedCommandError, EmptyData, Envelope, EnvelopeError, ErrorCode, Reporter, ReporterMode,
 };
 use rebotica_core::{
     model_for_mode, parse_allowed_files_from_envelope, parse_forbidden_files_from_envelope,
@@ -14,7 +14,6 @@ use rebotica_provider::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -556,9 +555,10 @@ async fn main() {
         Ok(cli) => {
             let reporter_mode = reporter_mode_from_cli_and_env(&cli);
             let command_path = command_path(&cli);
-            match run(cli, reporter_mode, started_at).await {
+            match run_until_done_or_canceled(cli, reporter_mode, started_at, &command_path).await {
                 Ok(code) => std::process::exit(code),
                 Err(error) => {
+                    let code = error_code_for(&error);
                     if reporter_mode == ReporterMode::Human {
                         eprintln!("rbtc: {error:#}");
                     } else {
@@ -566,11 +566,11 @@ async fn main() {
                             reporter_mode,
                             &command_path,
                             started_at,
-                            ErrorCode::Internal,
+                            code,
                             format!("{error:#}"),
                         );
                     }
-                    std::process::exit(1);
+                    std::process::exit(code.exit_code());
                 }
             }
         }
@@ -598,7 +598,34 @@ async fn main() {
                 ErrorCode::Usage,
                 error.to_string(),
             );
-            std::process::exit(error.exit_code());
+            std::process::exit(ErrorCode::Usage.exit_code());
+        }
+    }
+}
+
+async fn run_until_done_or_canceled(
+    cli: Cli,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+    command_path: &str,
+) -> Result<i32> {
+    tokio::select! {
+        result = run(cli, reporter_mode, started_at) => result,
+        signal = tokio::signal::ctrl_c() => {
+            signal.context("failed to listen for cancellation signal")?;
+            let message = "operation canceled";
+            if reporter_mode == ReporterMode::Human {
+                eprintln!("rbtc: {message}");
+            } else {
+                emit_top_level_error(
+                    reporter_mode,
+                    command_path,
+                    started_at,
+                    ErrorCode::Canceled,
+                    message.to_string(),
+                );
+            }
+            Ok(ErrorCode::Canceled.exit_code())
         }
     }
 }
@@ -613,7 +640,7 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
                 ErrorCode::Usage,
                 "missing subcommand".to_string(),
             );
-            return Ok(2);
+            return Ok(ErrorCode::Usage.exit_code());
         }
         Cli::command().print_help()?;
         println!();
@@ -860,30 +887,27 @@ fn emit_failure<T: Serialize>(
     Ok(())
 }
 
-#[derive(Debug)]
-struct CodedCommandError {
-    code: ErrorCode,
-    message: String,
-}
-
-impl fmt::Display for CodedCommandError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for CodedCommandError {}
-
 fn coded_error(code: ErrorCode, message: impl Into<String>) -> anyhow::Error {
-    CodedCommandError {
-        code,
-        message: message.into(),
-    }
-    .into()
+    CodedCommandError::new(code, message).into()
 }
 
 fn with_error_code<T>(result: Result<T>, code: ErrorCode) -> Result<T> {
-    result.map_err(|error| coded_error(code, format!("{error:#}")))
+    result.map_err(|error| {
+        // Preserve typed inner failures; outer context should not collapse a
+        // more specific producer code into a generic wrapper code.
+        if error.downcast_ref::<CodedCommandError>().is_some() {
+            error
+        } else {
+            coded_error(code, format!("{error:#}"))
+        }
+    })
+}
+
+fn error_code_for(error: &anyhow::Error) -> ErrorCode {
+    error
+        .downcast_ref::<CodedCommandError>()
+        .map(CodedCommandError::code)
+        .unwrap_or(ErrorCode::Internal)
 }
 
 fn handle_migrated_result(
@@ -897,10 +921,7 @@ fn handle_migrated_result(
         Ok(code) => Ok(code),
         Err(error) if reporter_mode.is_json() => {
             let message = format!("{error:#}");
-            let code = error
-                .downcast_ref::<CodedCommandError>()
-                .map(|error| error.code)
-                .unwrap_or(ErrorCode::Internal);
+            let code = error_code_for(&error);
             let mut reporter = Reporter::from_mode(reporter_mode);
             let envelope = Envelope::builder(kind)
                 .command(command)
@@ -913,7 +934,7 @@ fn handle_migrated_result(
                 .data(EmptyData)
                 .build();
             reporter.emit(&envelope)?;
-            Ok(1)
+            Ok(code.exit_code())
         }
         Err(error) => Err(error),
     }
@@ -1095,9 +1116,12 @@ async fn doctor(
 
     if failed {
         if reporter.is_json() {
-            Ok(1)
+            Ok(ErrorCode::Config.exit_code())
         } else {
-            Err(anyhow!("doctor found failing checks"))
+            Err(coded_error(
+                ErrorCode::Config,
+                "doctor found failing checks",
+            ))
         }
     } else {
         Ok(0)
@@ -1362,7 +1386,11 @@ fn finish_model_configure_report(
             code,
             data.error_message(),
         )?;
-        Ok(if reporter.is_json() { 1 } else { 0 })
+        Ok(if reporter.is_json() {
+            code.exit_code()
+        } else {
+            0
+        })
     } else {
         emit_success(
             reporter,
@@ -4046,6 +4074,15 @@ mod tests {
 
         let flag_error = Cli::try_parse_from(["rbtc", "--version"]).unwrap_err();
         assert_eq!(flag_error.kind(), ErrorKind::DisplayVersion);
+    }
+
+    #[test]
+    fn error_code_for_uses_typed_coded_errors_only() {
+        let coded = coded_error(ErrorCode::ProviderUnavailable, "provider down");
+        assert_eq!(error_code_for(&coded), ErrorCode::ProviderUnavailable);
+
+        let uncoded = anyhow!("provider down");
+        assert_eq!(error_code_for(&uncoded), ErrorCode::Internal);
     }
 
     #[test]
