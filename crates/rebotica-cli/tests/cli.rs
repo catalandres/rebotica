@@ -74,6 +74,30 @@ fn run_in_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process:
     command.output().expect("rbtc command should run")
 }
 
+fn run_git(cwd: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("git command should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_git_repo(cwd: &Path) {
+    run_git(cwd, &["init"]);
+    run_git(cwd, &["config", "user.name", "Rebotica Test"]);
+    run_git(cwd, &["config", "user.email", "rebotica@example.test"]);
+    run_git(cwd, &["config", "commit.gpgsign", "false"]);
+    fs::write(cwd.join("README.md"), "initial\n").unwrap();
+    run_git(cwd, &["add", "."]);
+    run_git(cwd, &["commit", "-m", "initial"]);
+}
+
 fn one_shot_models_server(models: &[&str]) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let addr = listener
@@ -100,6 +124,62 @@ fn one_shot_models_server(models: &[&str]) -> String {
             .write_all(response.as_bytes())
             .expect("test server should respond");
     });
+    format!("http://{addr}/v1")
+}
+
+fn one_shot_models_status_server(status: u16, body: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    let body = body.to_string();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test server should accept");
+        let mut buffer = [0_u8; 1024];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 {status} Provider Error\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test server should respond");
+    });
+    format!("http://{addr}/v1")
+}
+
+fn one_shot_chat_server(response_text: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    let body = format!(
+        r#"{{"choices":[{{"message":{{"content":{}}}}}]}}"#,
+        serde_json::to_string(response_text).unwrap()
+    );
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test server should accept");
+        let mut buffer = [0_u8; 2048];
+        let _ = stream.read(&mut buffer);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test server should respond");
+    });
+    format!("http://{addr}/v1")
+}
+
+fn unavailable_base_url() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    drop(listener);
     format!("http://{addr}/v1")
 }
 
@@ -479,6 +559,281 @@ fn providers_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["rebotica"], "v1");
     assert_eq!(json["kind"], "providers");
+}
+
+#[test]
+fn health_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
+    let temp = TempDir::new("health-quiet");
+    let base_url = one_shot_models_server(&["local-model"]);
+
+    let output = run_in(temp.path(), &["health", "--quiet", "--base-url", &base_url]);
+
+    assert!(
+        output.status.success(),
+        "health failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "health");
+    assert_eq!(json["command"], "health");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["provider"], "lmstudio");
+    assert_eq!(json["data"]["base_url"], base_url);
+    assert_eq!(json["data"]["model_count"], 1);
+    assert_eq!(json["data"]["models"], serde_json::json!(["local-model"]));
+    assert!(json["error"].is_null());
+}
+
+#[test]
+fn smoke_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
+    let temp = TempDir::new("smoke-quiet");
+    let base_url = one_shot_chat_server("LOCAL_OK\n");
+
+    let output = run_in(
+        temp.path(),
+        &[
+            "smoke",
+            "--quiet",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "smoke failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "smoke");
+    assert_eq!(json["command"], "smoke");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["provider"], "lmstudio");
+    assert_eq!(json["data"]["base_url"], base_url);
+    assert_eq!(json["data"]["model"], "local-model");
+    assert_eq!(
+        json["data"]["probe_prompt"],
+        serde_json::json!([
+            {
+                "role": "system",
+                "content": "Reply exactly with LOCAL_OK and no other text."
+            },
+            {
+                "role": "user",
+                "content": "Reply with LOCAL_OK only."
+            }
+        ])
+    );
+    assert_eq!(json["data"]["response"], "LOCAL_OK");
+    assert!(json["error"].is_null());
+}
+
+#[test]
+fn guard_diff_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
+    let temp = TempDir::new("guard-diff-quiet");
+    init_git_repo(temp.path());
+
+    let output = run_in(temp.path(), &["guard-diff", "--quiet"]);
+
+    assert!(
+        output.status.success(),
+        "guard-diff failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "guard-diff");
+    assert_eq!(json["command"], "guard-diff");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["data"]["changed_files"], 0);
+    assert_eq!(json["data"]["changed_lines"], 0);
+    assert_eq!(
+        json["data"]["effective_forbidden_paths"],
+        serde_json::json!([])
+    );
+    assert!(json["error"].is_null());
+}
+
+#[test]
+fn health_quiet_provider_unavailable_emits_typed_error_envelope() {
+    let temp = TempDir::new("health-provider-unavailable");
+    let base_url = unavailable_base_url();
+
+    let output = run_in(temp.path(), &["health", "--quiet", "--base-url", &base_url]);
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(10));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "health");
+    assert_eq!(json["command"], "health");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "provider_unavailable");
+    assert_eq!(json["error"]["details"]["endpoint"], "models");
+    assert!(json["error"]["details"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("error sending request"));
+    assert_eq!(json["data"]["provider"], "lmstudio");
+    assert_eq!(json["data"]["base_url"], base_url);
+    assert_eq!(json["data"]["model_count"], 0);
+}
+
+#[test]
+fn health_quiet_provider_http_status_emits_provider_server_error_envelope() {
+    let temp = TempDir::new("health-provider-server-error");
+    let base_url = one_shot_models_status_server(503, "model service overloaded");
+
+    let output = run_in(temp.path(), &["health", "--quiet", "--base-url", &base_url]);
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(11));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "health");
+    assert_eq!(json["command"], "health");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "provider_server_error");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("HTTP 503"));
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("model service overloaded"));
+    assert_eq!(
+        json["error"]["details"],
+        serde_json::json!({
+            "endpoint": "models",
+            "http_status": 503,
+            "body": "model service overloaded"
+        })
+    );
+    assert_eq!(json["data"]["provider"], "lmstudio");
+    assert_eq!(json["data"]["base_url"], base_url);
+    assert_eq!(json["data"]["model_count"], 0);
+}
+
+#[test]
+fn health_quiet_provider_http_status_4xx_emits_provider_client_error_envelope() {
+    let temp = TempDir::new("health-provider-client-error");
+    let base_url = one_shot_models_status_server(401, "missing api key");
+
+    let output = run_in(temp.path(), &["health", "--quiet", "--base-url", &base_url]);
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(12));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "health");
+    assert_eq!(json["command"], "health");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "provider_client_error");
+    assert_eq!(
+        json["error"]["details"],
+        serde_json::json!({
+            "endpoint": "models",
+            "http_status": 401,
+            "body": "missing api key"
+        })
+    );
+    assert_eq!(json["data"]["provider"], "lmstudio");
+    assert_eq!(json["data"]["base_url"], base_url);
+    assert_eq!(json["data"]["model_count"], 0);
+}
+
+#[test]
+fn guard_diff_quiet_guard_rejected_emits_typed_error_envelope() {
+    let temp = TempDir::new("guard-diff-rejected");
+    fs::write(
+        temp.path().join(".rebotica.yml"),
+        "forbidden_paths:\n  - secrets/\n",
+    )
+    .unwrap();
+    fs::create_dir_all(temp.path().join("secrets")).unwrap();
+    fs::write(temp.path().join("secrets/key.txt"), "secret\n").unwrap();
+    init_git_repo(temp.path());
+    fs::write(temp.path().join("secrets/key.txt"), "changed secret\n").unwrap();
+
+    let output = run_in(temp.path(), &["guard-diff", "--quiet"]);
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(20));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "guard-diff");
+    assert_eq!(json["command"], "guard-diff");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "guard_rejected");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("forbidden by pattern 'secrets/'"));
+    assert_eq!(
+        json["error"]["details"],
+        serde_json::json!({
+            "rejected_paths": ["secrets/key.txt"],
+            "forbidden_pattern": "secrets/"
+        })
+    );
+    assert_eq!(json["data"]["changed_files"], 1);
+    assert_eq!(
+        json["data"]["effective_forbidden_paths"],
+        serde_json::json!(["secrets/"])
+    );
+}
+
+#[test]
+fn guard_diff_quiet_over_limit_emits_typed_error_envelope() {
+    let temp = TempDir::new("guard-diff-over-limit");
+    init_git_repo(temp.path());
+    fs::write(temp.path().join("README.md"), "initial\nchanged\n").unwrap();
+
+    let output = run_in(temp.path(), &["guard-diff", "--quiet", "--max-lines", "0"]);
+
+    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(22));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "guard-diff");
+    assert_eq!(json["command"], "guard-diff");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "over_limit");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("changed line count"));
+    assert_eq!(json["data"]["max_lines"], 0);
+    assert!(json["data"]["changed_lines"].as_u64().unwrap() > 0);
+    assert_eq!(json["error"]["details"]["kind"], "lines");
+    assert_eq!(json["error"]["details"]["limit"], 0);
+    assert_eq!(
+        json["error"]["details"]["actual"],
+        json["data"]["changed_lines"]
+    );
+    assert_eq!(
+        json["data"]["effective_forbidden_paths"],
+        serde_json::json!([])
+    );
 }
 
 #[test]

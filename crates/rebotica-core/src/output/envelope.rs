@@ -34,7 +34,8 @@ pub enum ErrorCode {
     Usage,
     Config,
     ProviderUnavailable,
-    ProviderError,
+    ProviderServerError,
+    ProviderClientError,
     GuardRejected,
     PatchInvalid,
     OverLimit,
@@ -49,7 +50,8 @@ impl ErrorCode {
             Self::Usage,
             Self::Config,
             Self::ProviderUnavailable,
-            Self::ProviderError,
+            Self::ProviderServerError,
+            Self::ProviderClientError,
             Self::GuardRejected,
             Self::PatchInvalid,
             Self::OverLimit,
@@ -63,7 +65,8 @@ impl ErrorCode {
             Self::Usage => 2,
             Self::Config => 3,
             Self::ProviderUnavailable => 10,
-            Self::ProviderError => 11,
+            Self::ProviderServerError => 11,
+            Self::ProviderClientError => 12,
             Self::GuardRejected => 20,
             Self::PatchInvalid => 21,
             Self::OverLimit => 22,
@@ -267,7 +270,8 @@ mod tests {
         assert_eq!(ErrorCode::Usage.exit_code(), 2);
         assert_eq!(ErrorCode::Config.exit_code(), 3);
         assert_eq!(ErrorCode::ProviderUnavailable.exit_code(), 10);
-        assert_eq!(ErrorCode::ProviderError.exit_code(), 11);
+        assert_eq!(ErrorCode::ProviderServerError.exit_code(), 11);
+        assert_eq!(ErrorCode::ProviderClientError.exit_code(), 12);
         assert_eq!(ErrorCode::GuardRejected.exit_code(), 20);
         assert_eq!(ErrorCode::PatchInvalid.exit_code(), 21);
         assert_eq!(ErrorCode::OverLimit.exit_code(), 22);
@@ -283,7 +287,8 @@ mod tests {
                 ErrorCode::Usage,
                 ErrorCode::Config,
                 ErrorCode::ProviderUnavailable,
-                ErrorCode::ProviderError,
+                ErrorCode::ProviderServerError,
+                ErrorCode::ProviderClientError,
                 ErrorCode::GuardRejected,
                 ErrorCode::PatchInvalid,
                 ErrorCode::OverLimit,

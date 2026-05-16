@@ -2,7 +2,7 @@
 
 Rebotica JSON and quiet output include a stable `error.code` value when a migrated command fails. The process exit code is derived from that typed error code, not from matching error-message text.
 
-Legacy commands that have not been migrated to envelopes yet keep their existing human-oriented behavior. This includes `health`, `smoke`, `guard-diff`, and `run ...`.
+Legacy commands that have not been migrated to envelopes yet keep their existing human-oriented behavior. This includes `run ...`.
 
 ## For Consumers
 
@@ -12,11 +12,52 @@ Legacy commands that have not been migrated to envelopes yet keep their existing
 | `usage` | 2 | Invalid CLI usage, missing arguments, or rejected user input. | Ask the caller to fix the command or input. |
 | `config` | 3 | Project configuration, local state, or expected file setup is invalid or missing. | Ask for project setup or configuration repair. |
 | `provider_unavailable` | 10 | The configured provider cannot be reached or cannot supply the requested model listing. | Retry after provider startup, endpoint, or network checks. |
-| `provider_error` | 11 | The provider was reached but returned an unusable response for the requested operation. | Retry if transient; otherwise surface provider details. |
+| `provider_server_error` | 11 | Provider was reached but returned a 5xx or an unparseable response. | Retry after backoff; surface provider details if it persists. |
+| `provider_client_error` | 12 | Provider rejected the request with HTTP 4xx. | Do not retry unchanged; fix auth, model name, or malformed input. |
 | `guard_rejected` | 20 | A policy or safety guard rejected the requested operation. | Do not retry unchanged; ask for review or narrower scope. |
 | `patch_invalid` | 21 | A patch or patch-like output is malformed or cannot be accepted. | Ask for regeneration or manual repair before applying. |
 | `over_limit` | 22 | The requested operation exceeds configured size or safety limits. | Ask for a smaller scope or explicit limit adjustment. |
 | `cancelled` | 130 | The command was interrupted by cancellation, such as Ctrl-C. | Treat as user-initiated cancellation, not a system failure. |
+
+## Error Details
+
+Envelope failures may include `error.details` with code-specific context. Consumers should branch on `error.code` first, then read the relevant fields.
+
+`provider_unavailable`:
+
+```json
+{ "endpoint": "models", "reason": "connection refused" }
+```
+
+`provider_server_error` with HTTP status:
+
+```json
+{ "endpoint": "models", "http_status": 503, "body": "service overloaded" }
+```
+
+`provider_server_error` with invalid response:
+
+```json
+{ "endpoint": "chat", "parse_error": "expected value at line 1 column 1" }
+```
+
+`provider_client_error`:
+
+```json
+{ "endpoint": "models", "http_status": 401, "body": "missing api key" }
+```
+
+`guard_rejected`:
+
+```json
+{ "rejected_paths": ["secrets/key.txt"], "forbidden_pattern": "secrets/" }
+```
+
+`over_limit`:
+
+```json
+{ "kind": "lines", "limit": 1000, "actual": 1542 }
+```
 
 ## For Contributors
 
