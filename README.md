@@ -28,22 +28,12 @@ This repository starts with a Rust CLI and a project-agnostic file structure. Th
 
 Implemented in this first version:
 
-- Provider health and smoke checks, with LM Studio as the default local provider.
-- `rbtc doctor` for config validation and environment diagnostics.
-- `rbtc models`, `rbtc models configure`, and `rbtc providers` for routing visibility and explicit route setup.
-- `rbtc init` project onboarding.
-- `rbtc install claude|codex|github|all` for Prime-agent and repository assets.
-- `rbtc skills list|show` for inspecting canonical and project-local skills.
-- `rbtc run review` for working-tree, staged, base-ref, or explicit-range git diffs.
-- `rbtc guard-diff` for forbidden-path and size-limit checks on selected git diffs.
-- `rbtc score` for Prime feedback on model-run performance.
-- `rbtc comment-card` for local-first product feedback about Rebotica.
-- `rbtc run explain <file...>` for file explanation.
-- `rbtc run tests <file...>` for test proposals.
-- `rbtc run patch <task-envelope.yml> --dry-run` guard flow.
-- Run logging under `~/.rebotica/runs`.
-- Prompt contracts, templates, Prime-agent adapter assets, and Prime-selected skill context.
-- MCP server source scaffold with narrow tool boundaries.
+- Setup and status: `rbtc init`, `rbtc doctor`, `rbtc providers`, `rbtc models`, `rbtc models configure`, `rbtc health`, `rbtc smoke`, and `rbtc install claude|codex|github|all`.
+- Delegated work: `rbtc run review`, `rbtc run explain <file...>`, `rbtc run tests <file...>`, and `rbtc run patch <task-envelope.yml> --dry-run`.
+- Policy and safety: `rbtc guard-diff` for forbidden-path and size-limit checks on selected git diffs.
+- Skills and prompts: `rbtc skills list|show`, prompt contracts, templates, Prime-agent adapter assets, and Prime-selected skill context.
+- Feedback and learning: `rbtc score`, `rbtc scorecards`, `rbtc comment-card`, run logging under `~/.rebotica/runs`, and local-first product feedback about Rebotica.
+- Future bridge: MCP server source scaffold with narrow tool boundaries.
 
 ## Requirements
 

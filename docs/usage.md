@@ -18,6 +18,16 @@ export PATH="$HOME/.local/bin:$PATH"
 
 For contributor builds inside this repo, `bin/rbtc` builds and runs the debug executable directly with Cargo.
 
+## Command Groups
+
+Top-level help mirrors the main workflow categories:
+
+- Setup and status: `init`, `doctor`, `providers`, `models`, `health`, `smoke`, `install`.
+- Delegated work: `run review`, `run explain`, `run tests`, `run patch`.
+- Policy and safety: `guard-diff`.
+- Skills and prompts: `skills`.
+- Feedback and learning: `score`, `scorecards`, `comment-card`, `retro`.
+
 ## Check The Provider
 
 Start the configured provider, then run:
