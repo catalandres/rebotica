@@ -3,6 +3,7 @@ use rebotica_core::{LoadedConfig, ProviderConfig};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 
 #[derive(Debug, Clone)]
 pub struct ProviderOverrides {
@@ -100,6 +101,61 @@ pub struct OpenAICompatibleProvider {
     client: reqwest::Client,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderError {
+    Unavailable {
+        endpoint: &'static str,
+        message: String,
+    },
+    HttpStatus {
+        endpoint: &'static str,
+        status: u16,
+        body: String,
+    },
+    InvalidResponse {
+        endpoint: &'static str,
+        message: String,
+    },
+}
+
+impl fmt::Display for ProviderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable { endpoint, message } => {
+                write!(
+                    formatter,
+                    "could not reach provider {endpoint} endpoint: {message}"
+                )
+            }
+            Self::HttpStatus {
+                endpoint,
+                status,
+                body,
+            } => {
+                if body.is_empty() {
+                    write!(
+                        formatter,
+                        "provider {endpoint} endpoint returned HTTP {status}"
+                    )
+                } else {
+                    write!(
+                        formatter,
+                        "provider {endpoint} endpoint returned HTTP {status}: {body}"
+                    )
+                }
+            }
+            Self::InvalidResponse { endpoint, message } => {
+                write!(
+                    formatter,
+                    "provider returned invalid {endpoint} response: {message}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
 impl OpenAICompatibleProvider {
     pub fn new(settings: &ProviderSettings) -> Result<Self> {
         let mut headers = HeaderMap::new();
@@ -121,18 +177,31 @@ impl OpenAICompatibleProvider {
         })
     }
 
-    pub async fn models(&self) -> Result<Vec<String>> {
-        let response: ModelsResponse = self
+    pub async fn models(&self) -> std::result::Result<Vec<String>, ProviderError> {
+        let endpoint = "models";
+        let response = self
             .client
             .get(format!("{}/models", self.base_url))
             .send()
             .await
-            .context("could not reach provider models endpoint")?
-            .error_for_status()
-            .context("provider models endpoint returned an error")?
-            .json()
-            .await
-            .context("provider returned invalid models JSON")?;
+            .map_err(|error| provider_unavailable(endpoint, error))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.map(truncate_body).unwrap_or_default();
+            return Err(ProviderError::HttpStatus {
+                endpoint,
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let response: ModelsResponse =
+            response
+                .json()
+                .await
+                .map_err(|error| ProviderError::InvalidResponse {
+                    endpoint,
+                    message: error.to_string(),
+                })?;
         Ok(response.data.into_iter().map(|model| model.id).collect())
     }
 
@@ -141,31 +210,65 @@ impl OpenAICompatibleProvider {
         model: &str,
         messages: Vec<ChatMessage>,
         temperature: f64,
-    ) -> Result<String> {
+    ) -> std::result::Result<String, ProviderError> {
+        let endpoint = "chat";
         let request = ChatRequest {
             model,
             messages,
             temperature,
         };
-        let response: ChatResponse = self
+        let response = self
             .client
             .post(format!("{}/chat/completions", self.base_url))
             .json(&request)
             .send()
             .await
-            .context("could not reach provider chat endpoint")?
-            .error_for_status()
-            .context("provider chat endpoint returned an error")?
-            .json()
-            .await
-            .context("provider returned invalid chat JSON")?;
+            .map_err(|error| provider_unavailable(endpoint, error))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.map(truncate_body).unwrap_or_default();
+            return Err(ProviderError::HttpStatus {
+                endpoint,
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let response: ChatResponse =
+            response
+                .json()
+                .await
+                .map_err(|error| ProviderError::InvalidResponse {
+                    endpoint,
+                    message: error.to_string(),
+                })?;
         response
             .choices
             .into_iter()
             .next()
             .map(|choice| choice.message.content)
-            .ok_or_else(|| anyhow!("provider response did not include choices[0].message.content"))
+            .ok_or_else(|| ProviderError::InvalidResponse {
+                endpoint,
+                message: "missing choices[0].message.content".to_string(),
+            })
     }
+}
+
+fn provider_unavailable(endpoint: &'static str, error: reqwest::Error) -> ProviderError {
+    ProviderError::Unavailable {
+        endpoint,
+        message: error.to_string(),
+    }
+}
+
+fn truncate_body(body: String) -> String {
+    const MAX_BODY_CHARS: usize = 2048;
+    let trimmed = body.trim().to_string();
+    if trimmed.chars().count() <= MAX_BODY_CHARS {
+        return trimmed;
+    }
+    let mut truncated = trimmed.chars().take(MAX_BODY_CHARS).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -9,7 +9,7 @@ use rebotica_core::{
     resolve_model_alias, LoadedConfig, ProjectConfig, TaskEnvelope, WorkerMode,
 };
 use rebotica_provider::{
-    ChatMessage, OpenAICompatibleProvider, ProviderOverrides, ProviderSettings,
+    ChatMessage, OpenAICompatibleProvider, ProviderError, ProviderOverrides, ProviderSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -669,14 +669,20 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             "providers",
             "providers",
         ),
-        Command::Health(args) => {
-            health(args).await?;
-            Ok(0)
-        }
-        Command::Smoke(args) => {
-            smoke(args).await?;
-            Ok(0)
-        }
+        Command::Health(args) => handle_migrated_result(
+            health(args, reporter_mode, started_at).await,
+            reporter_mode,
+            started_at,
+            "health",
+            "health",
+        ),
+        Command::Smoke(args) => handle_migrated_result(
+            smoke(args, reporter_mode, started_at).await,
+            reporter_mode,
+            started_at,
+            "smoke",
+            "smoke",
+        ),
         Command::Init(args) => handle_migrated_result(
             init_project(args, reporter_mode, started_at),
             reporter_mode,
@@ -708,10 +714,13 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             run_mode(args).await?;
             Ok(0)
         }
-        Command::GuardDiff(args) => {
-            guard_diff(args)?;
-            Ok(0)
-        }
+        Command::GuardDiff(args) => handle_migrated_result(
+            guard_diff(args, reporter_mode, started_at),
+            reporter_mode,
+            started_at,
+            "guard-diff",
+            "guard-diff",
+        ),
         Command::Score(args) => handle_migrated_result(
             score(args, reporter_mode, started_at),
             reporter_mode,
@@ -870,6 +879,7 @@ fn emit_failure<T: Serialize>(
     data: &T,
     code: ErrorCode,
     message: impl Into<String>,
+    details: Option<serde_json::Value>,
 ) -> Result<()> {
     if reporter.is_json() {
         let envelope = Envelope::builder(kind)
@@ -879,7 +889,7 @@ fn emit_failure<T: Serialize>(
             .error(EnvelopeError {
                 code,
                 message: message.into(),
-                details: None,
+                details,
             })
             .build();
         reporter.emit(&envelope)?;
@@ -1385,6 +1395,7 @@ fn finish_model_configure_report(
             &data,
             code,
             data.error_message(),
+            None,
         )?;
         Ok(if reporter.is_json() {
             code.exit_code()
@@ -1444,41 +1455,170 @@ fn providers(
     Ok(0)
 }
 
-async fn health(args: ProviderArgs) -> Result<()> {
-    let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
-    let settings = provider_settings(&loaded, args)?;
-    let provider = OpenAICompatibleProvider::new(&settings)?;
-    let models = provider.models().await?;
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "ok": true,
-            "provider": settings.name,
-            "base_url": settings.base_url,
-            "model_count": models.len(),
-            "models": models
-        }))?
-    );
-    Ok(())
+#[derive(Debug, Clone, Serialize)]
+struct HealthData {
+    provider: String,
+    base_url: String,
+    model_count: usize,
+    models: Vec<String>,
 }
 
-async fn smoke(args: SmokeArgs) -> Result<()> {
-    let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
-    let model = resolve_model(&loaded, WorkerMode::Default, args.model)?;
-    let settings = provider_settings(&loaded, args.provider)?;
-    let provider = OpenAICompatibleProvider::new(&settings)?;
-    let text = provider
-        .chat(
-            &model,
-            vec![
-                ChatMessage::new("system", "Reply exactly with LOCAL_OK and no other text."),
-                ChatMessage::new("user", "Reply with LOCAL_OK only."),
-            ],
-            args.temperature,
-        )
-        .await?;
-    println!("{}", text.trim());
-    Ok(())
+#[derive(Debug, Clone, Serialize)]
+struct SmokeData {
+    provider: String,
+    base_url: String,
+    model: String,
+    probe_prompt: Vec<ChatMessage>,
+    response: String,
+}
+
+async fn health(
+    args: ProviderArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let loaded = with_error_code(
+        LoadedConfig::read_from(&std::env::current_dir()?),
+        ErrorCode::Config,
+    )?;
+    let settings = with_error_code(provider_settings(&loaded, args), ErrorCode::Config)?;
+    let provider = with_error_code(OpenAICompatibleProvider::new(&settings), ErrorCode::Config)?;
+    let models = match provider.models().await {
+        Ok(models) => models,
+        Err(error) => {
+            let code = error_code_for_provider_failure(&error);
+            let details = provider_failure_details(&error);
+            let message = error.to_string();
+            let data = HealthData {
+                provider: settings.name,
+                base_url: settings.base_url,
+                model_count: 0,
+                models: Vec::new(),
+            };
+            if reporter.is_json() {
+                emit_failure(
+                    &mut reporter,
+                    "health",
+                    "health",
+                    started_at,
+                    &data,
+                    code,
+                    message,
+                    Some(details),
+                )?;
+                return Ok(code.exit_code());
+            }
+            return Err(coded_error(code, message));
+        }
+    };
+    let data = HealthData {
+        provider: settings.name,
+        base_url: settings.base_url,
+        model_count: models.len(),
+        models,
+    };
+    if reporter.is_json() {
+        emit_success(&mut reporter, "health", "health", started_at, &data)?;
+    } else {
+        reporter.human(&serde_json::to_string_pretty(&data)?)?;
+    }
+    Ok(0)
+}
+
+async fn smoke(
+    args: SmokeArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let loaded = with_error_code(
+        LoadedConfig::read_from(&std::env::current_dir()?),
+        ErrorCode::Config,
+    )?;
+    let model = resolve_model(&loaded, WorkerMode::Default, args.model)
+        .map_err(|error| coded_error(ErrorCode::Config, error.to_string()))?;
+    let settings = with_error_code(provider_settings(&loaded, args.provider), ErrorCode::Config)?;
+    let provider = with_error_code(OpenAICompatibleProvider::new(&settings), ErrorCode::Config)?;
+    let probe_prompt = vec![
+        ChatMessage::new("system", "Reply exactly with LOCAL_OK and no other text."),
+        ChatMessage::new("user", "Reply with LOCAL_OK only."),
+    ];
+    let text = match provider
+        .chat(&model, probe_prompt.clone(), args.temperature)
+        .await
+    {
+        Ok(text) => text,
+        Err(error) => {
+            let code = error_code_for_provider_failure(&error);
+            let details = provider_failure_details(&error);
+            let message = error.to_string();
+            let data = SmokeData {
+                provider: settings.name,
+                base_url: settings.base_url,
+                model,
+                probe_prompt,
+                response: String::new(),
+            };
+            if reporter.is_json() {
+                emit_failure(
+                    &mut reporter,
+                    "smoke",
+                    "smoke",
+                    started_at,
+                    &data,
+                    code,
+                    message,
+                    Some(details),
+                )?;
+                return Ok(code.exit_code());
+            }
+            return Err(coded_error(code, message));
+        }
+    };
+    let data = SmokeData {
+        provider: settings.name,
+        base_url: settings.base_url,
+        model,
+        probe_prompt,
+        response: text.trim().to_string(),
+    };
+    if reporter.is_json() {
+        emit_success(&mut reporter, "smoke", "smoke", started_at, &data)?;
+    } else {
+        reporter.human(&data.response)?;
+    }
+    Ok(0)
+}
+
+fn error_code_for_provider_failure(error: &ProviderError) -> ErrorCode {
+    match error {
+        ProviderError::Unavailable { .. } => ErrorCode::ProviderUnavailable,
+        ProviderError::HttpStatus { status, .. } if (400..500).contains(status) => {
+            ErrorCode::ProviderClientError
+        }
+        ProviderError::HttpStatus { .. } | ProviderError::InvalidResponse { .. } => {
+            ErrorCode::ProviderServerError
+        }
+    }
+}
+
+fn provider_failure_details(error: &ProviderError) -> serde_json::Value {
+    match error {
+        ProviderError::Unavailable { endpoint, message } => {
+            serde_json::json!({ "endpoint": endpoint, "reason": message })
+        }
+        ProviderError::HttpStatus {
+            endpoint,
+            status,
+            body,
+        } => {
+            serde_json::json!({ "endpoint": endpoint, "http_status": status, "body": body })
+        }
+        ProviderError::InvalidResponse { endpoint, message } => {
+            serde_json::json!({ "endpoint": endpoint, "parse_error": message })
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1937,10 +2077,29 @@ async fn propose_patch(args: PatchArgs) -> Result<()> {
     ))
 }
 
-fn guard_diff(args: GuardDiffArgs) -> Result<()> {
-    rebotica_git::assert_repository()?;
-    let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
-    let diff_source = guard_diff_source(&args)?;
+#[derive(Debug, Clone, Serialize)]
+struct GuardDiffData {
+    diff_source: String,
+    changed_files: usize,
+    changed_lines: usize,
+    max_files: usize,
+    max_lines: usize,
+    effective_forbidden_paths: Vec<String>,
+}
+
+fn guard_diff(
+    args: GuardDiffArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    with_error_code(rebotica_git::assert_repository(), ErrorCode::Config)?;
+    let loaded = with_error_code(
+        LoadedConfig::read_from(&std::env::current_dir()?),
+        ErrorCode::Config,
+    )?;
+    let diff_source = guard_diff_source(&args)
+        .map_err(|error| coded_error(ErrorCode::Usage, error.to_string()))?;
     let diff_source_description = diff_source.description();
     let changed = rebotica_git::changed_files_for(&diff_source)?;
     let changed_lines = rebotica_git::changed_line_count_for(&diff_source)?;
@@ -1950,31 +2109,89 @@ fn guard_diff(args: GuardDiffArgs) -> Result<()> {
     let max_lines = args
         .max_lines
         .unwrap_or(loaded.config.default_limits.max_changed_lines);
-    rebotica_guard::ensure_allowed(&changed, &loaded.config.forbidden_paths)?;
+    let data = GuardDiffData {
+        diff_source: diff_source_description,
+        changed_files: changed.len(),
+        changed_lines,
+        max_files,
+        max_lines,
+        effective_forbidden_paths: loaded.config.forbidden_paths.clone(),
+    };
+    if let Err(error) = rebotica_guard::ensure_allowed(&changed, &loaded.config.forbidden_paths) {
+        let message = error.to_string();
+        if reporter.is_json() {
+            emit_failure(
+                &mut reporter,
+                "guard-diff",
+                "guard-diff",
+                started_at,
+                &data,
+                ErrorCode::GuardRejected,
+                message,
+                Some(serde_json::json!({
+                    "rejected_paths": [error.rejected_path()],
+                    "forbidden_pattern": error.forbidden_pattern()
+                })),
+            )?;
+            return Ok(ErrorCode::GuardRejected.exit_code());
+        }
+        return Err(coded_error(ErrorCode::GuardRejected, message));
+    }
     if changed.len() > max_files {
-        return Err(anyhow!(
+        let message = format!(
             "changed file count {} exceeds limit {}",
             changed.len(),
             max_files
-        ));
+        );
+        if reporter.is_json() {
+            emit_failure(
+                &mut reporter,
+                "guard-diff",
+                "guard-diff",
+                started_at,
+                &data,
+                ErrorCode::OverLimit,
+                message,
+                Some(serde_json::json!({
+                    "kind": "files",
+                    "limit": max_files,
+                    "actual": changed.len()
+                })),
+            )?;
+            return Ok(ErrorCode::OverLimit.exit_code());
+        }
+        return Err(coded_error(ErrorCode::OverLimit, message));
     }
     if changed_lines > max_lines {
-        return Err(anyhow!(
+        let message = format!(
             "changed line count {} exceeds limit {}",
-            changed_lines,
-            max_lines
-        ));
+            changed_lines, max_lines
+        );
+        if reporter.is_json() {
+            emit_failure(
+                &mut reporter,
+                "guard-diff",
+                "guard-diff",
+                started_at,
+                &data,
+                ErrorCode::OverLimit,
+                message,
+                Some(serde_json::json!({
+                    "kind": "lines",
+                    "limit": max_lines,
+                    "actual": changed_lines
+                })),
+            )?;
+            return Ok(ErrorCode::OverLimit.exit_code());
+        }
+        return Err(coded_error(ErrorCode::OverLimit, message));
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "ok": true,
-            "diff_source": diff_source_description,
-            "changed_files": changed.len(),
-            "changed_lines": changed_lines
-        }))?
-    );
-    Ok(())
+    if reporter.is_json() {
+        emit_success(&mut reporter, "guard-diff", "guard-diff", started_at, &data)?;
+    } else {
+        reporter.human(&serde_json::to_string_pretty(&data)?)?;
+    }
+    Ok(0)
 }
 
 fn guard_diff_source(args: &GuardDiffArgs) -> Result<rebotica_git::DiffSource> {

@@ -1,6 +1,41 @@
-use anyhow::{anyhow, Result};
+use std::fmt;
 
-pub fn ensure_allowed(files: &[String], forbidden_patterns: &[String]) -> Result<()> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuardError {
+    rejected_path: String,
+    forbidden_pattern: String,
+}
+
+impl GuardError {
+    pub fn new(rejected_path: impl Into<String>, forbidden_pattern: impl Into<String>) -> Self {
+        Self {
+            rejected_path: rejected_path.into(),
+            forbidden_pattern: forbidden_pattern.into(),
+        }
+    }
+
+    pub fn rejected_path(&self) -> &str {
+        &self.rejected_path
+    }
+
+    pub fn forbidden_pattern(&self) -> &str {
+        &self.forbidden_pattern
+    }
+}
+
+impl fmt::Display for GuardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "file '{}' is forbidden by pattern '{}'",
+            self.rejected_path, self.forbidden_pattern
+        )
+    }
+}
+
+impl std::error::Error for GuardError {}
+
+pub fn ensure_allowed(files: &[String], forbidden_patterns: &[String]) -> Result<(), GuardError> {
     for file in files {
         let normalized = normalize(file);
         for pattern in forbidden_patterns {
@@ -10,11 +45,7 @@ pub fn ensure_allowed(files: &[String], forbidden_patterns: &[String]) -> Result
                 continue;
             }
             if is_forbidden(&normalized, &clean, directory_pattern) {
-                return Err(anyhow!(
-                    "file '{}' is forbidden by pattern '{}'",
-                    file,
-                    pattern
-                ));
+                return Err(GuardError::new(file, pattern));
             }
         }
     }
