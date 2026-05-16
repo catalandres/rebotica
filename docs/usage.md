@@ -28,6 +28,10 @@ Top-level help mirrors the main workflow categories:
 - Skills and prompts: `skills`.
 - Feedback and learning: `score`, `scorecards`, `comment-card`, `retro`.
 
+## Error Codes And Exits
+
+JSON and quiet output include a stable `error.code` value when a migrated command fails. The process exit code is derived from that typed error code, not from matching error-message text. See [Exit Codes](exit-codes.md) for the full consumer and contributor contract.
+
 ## Check The Provider
 
 Start the configured provider, then run:
