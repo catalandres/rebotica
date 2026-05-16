@@ -823,6 +823,7 @@ name = "rebotica-cli"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "rebotica-core",
  "rebotica-git",
@@ -840,7 +841,9 @@ name = "rebotica-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "serde",
+ "serde_json",
  "serde_yaml",
 ]
 
