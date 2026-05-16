@@ -49,9 +49,25 @@ fn run_in(cwd: &Path, args: &[&str]) -> std::process::Output {
     rbtc()
         .current_dir(cwd)
         .env("REBOTICA_HOME", harness_root())
+        .env_remove("REBOTICA_JSON")
+        .env_remove("REBOTICA_QUIET")
         .args(args)
         .output()
         .expect("rbtc command should run")
+}
+
+fn run_in_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
+    let mut command = rbtc();
+    command
+        .current_dir(cwd)
+        .env("REBOTICA_HOME", harness_root())
+        .env_remove("REBOTICA_JSON")
+        .env_remove("REBOTICA_QUIET")
+        .args(args);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().expect("rbtc command should run")
 }
 
 #[test]
@@ -304,6 +320,211 @@ fn providers_json_reports_implicit_lmstudio_without_network() {
                 && provider["base_url"] == "http://127.0.0.1:1234/v1"
                 && provider["implicit"] == true
         }));
+}
+
+#[test]
+fn doctor_json_emits_v1_envelope() {
+    let temp = TempDir::new("doctor-json");
+
+    let output = run_in(temp.path(), &["doctor", "--json"]);
+
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "doctor");
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "doctor");
+    assert!(json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| { check["id"] == "config.parse" && check["status"] == "ok" }));
+    assert!(json["error"].is_null());
+    assert!(json["started_at"].as_str().unwrap().contains('T'));
+    assert!(json["duration_ms"].as_u64().is_some());
+}
+
+#[test]
+fn doctor_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
+    let temp = TempDir::new("doctor-quiet");
+
+    let output = run_in(temp.path(), &["doctor", "--quiet"]);
+
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.matches("\"rebotica\"").count(), 1);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "doctor");
+    assert_eq!(json["ok"], true);
+}
+
+#[test]
+fn doctor_quiet_failure_emits_error_envelope_no_stderr_noise() {
+    let temp = TempDir::new("doctor-quiet-failure");
+    fs::write(
+        temp.path().join(".rebotica.yml"),
+        r#"
+default_limits:
+  max_changed_lines: 0
+  max_files_changed: 0
+"#,
+    )
+    .unwrap();
+
+    let output = run_in(temp.path(), &["doctor", "--quiet"]);
+
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "doctor");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "config");
+    assert!(json["data"].as_array().unwrap().iter().any(|check| {
+        check["id"] == "config.limits.max_changed_lines" && check["status"] == "fail"
+    }));
+}
+
+#[test]
+fn global_json_before_subcommand() {
+    let temp = TempDir::new("doctor-global-json");
+
+    let output = run_in(temp.path(), &["--json", "doctor"]);
+
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "doctor");
+}
+
+#[test]
+fn global_json_without_subcommand_emits_usage_error_envelope() {
+    let temp = TempDir::new("global-json-no-subcommand");
+
+    let output = run_in(temp.path(), &["--json"]);
+
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "error");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["command"], "rbtc");
+    assert_eq!(json["data"], serde_json::json!({}));
+    assert_eq!(json["error"]["code"], "usage");
+    assert_eq!(json["error"]["message"], "missing subcommand");
+}
+
+#[test]
+fn global_quiet_implies_json() {
+    let temp = TempDir::new("doctor-global-quiet");
+
+    let output = run_in(temp.path(), &["--quiet", "doctor"]);
+
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+}
+
+#[test]
+fn env_rebotica_json_triggers_json_mode() {
+    let temp = TempDir::new("doctor-env-json");
+
+    let output = run_in_env(temp.path(), &["doctor"], &[("REBOTICA_JSON", "true")]);
+
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "doctor");
+}
+
+#[test]
+fn env_rebotica_quiet_triggers_quiet_mode() {
+    let temp = TempDir::new("doctor-env-quiet");
+
+    let output = run_in_env(temp.path(), &["doctor"], &[("REBOTICA_QUIET", "1")]);
+
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "doctor");
+}
+
+#[test]
+fn help_flag_bypasses_json_envelope() {
+    // `--help` is not an error. clap's DisplayHelp variant is paired with exit
+    // code 0; wrapping it in a `kind: "error"` envelope would produce a self-
+    // contradicting `ok: false` + exit 0. Verify help text goes to stdout and
+    // no envelope is emitted, even with the global --json flag set.
+    let temp = TempDir::new("help-flag-json");
+
+    let output = run_in(temp.path(), &["--json", "--help"]);
+
+    assert!(output.status.success(), "exit code should be 0 for --help");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Usage: rbtc"), "help text should be on stdout");
+    assert!(
+        !stdout.contains("\"rebotica\""),
+        "no envelope should be emitted for --help, got: {stdout}"
+    );
+}
+
+#[test]
+fn version_flag_bypasses_json_envelope() {
+    let temp = TempDir::new("version-flag-json");
+
+    let output = run_in(temp.path(), &["--quiet", "--version"]);
+
+    assert!(output.status.success(), "exit code should be 0 for --version");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("rbtc "), "version text should be on stdout");
+    assert!(
+        !stdout.contains("\"rebotica\""),
+        "no envelope should be emitted for --version, got: {stdout}"
+    );
+}
+
+#[test]
+fn quiet_parse_failure_emits_error_envelope_no_stderr_noise() {
+    let temp = TempDir::new("quiet-parse-failure");
+
+    let output = run_in(temp.path(), &["--quiet", "--definitely-not-a-command"]);
+
+    assert!(!output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["rebotica"], "v1");
+    assert_eq!(json["kind"], "error");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "usage");
 }
 
 #[test]

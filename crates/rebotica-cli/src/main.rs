@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::{DateTime, Utc};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use rebotica_core::output::{Envelope, EnvelopeError, ErrorCode, Reporter, ReporterMode};
 use rebotica_core::{
     model_for_mode, parse_allowed_files_from_envelope, parse_forbidden_files_from_envelope,
     resolve_model_alias, LoadedConfig, ProjectConfig, TaskEnvelope, WorkerMode,
@@ -9,6 +11,7 @@ use rebotica_provider::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -39,6 +42,14 @@ Provider setup:
   export REBOTICA_BASE_URL=http://127.0.0.1:1234/v1
   export REBOTICA_MODEL=MODEL_ID")]
 struct Cli {
+    #[arg(long, global = true, help = "Emit machine-readable JSON envelope.")]
+    json: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Suppress stderr; emit only the JSON envelope on stdout. Implies --json."
+    )]
+    quiet: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -116,8 +127,6 @@ struct InitArgs {
 struct DoctorArgs {
     #[command(flatten)]
     provider: ProviderArgs,
-    #[arg(long, help = "Emit machine-readable JSON checks.")]
-    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -129,8 +138,6 @@ struct ModelsArgs {
         help = "Skip the provider /models request and show configured routes only."
     )]
     configured_only: bool,
-    #[arg(long, help = "Emit machine-readable JSON output.")]
-    json: bool,
     #[command(subcommand)]
     command: Option<ModelsCommand>,
 }
@@ -169,15 +176,10 @@ struct ModelConfigureArgs {
         help = "Replace existing route values and an existing alias target."
     )]
     force: bool,
-    #[arg(long, help = "Emit machine-readable JSON output.")]
-    json: bool,
 }
 
 #[derive(Debug, Parser)]
-struct ProvidersArgs {
-    #[arg(long, help = "Emit machine-readable JSON output.")]
-    json: bool,
-}
+struct ProvidersArgs {}
 
 #[derive(Debug, Parser)]
 struct InstallArgs {
@@ -213,10 +215,7 @@ enum SkillsCommand {
 }
 
 #[derive(Debug, Parser)]
-struct SkillsListArgs {
-    #[arg(long, help = "Emit machine-readable JSON output.")]
-    json: bool,
-}
+struct SkillsListArgs {}
 
 #[derive(Debug, Parser)]
 struct SkillsShowArgs {
@@ -547,35 +546,212 @@ struct RetroArgs {
 
 #[tokio::main]
 async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("rbtc: {error:#}");
-        std::process::exit(1);
+    let started_at = Utc::now();
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let reporter_mode = reporter_mode_from_args_and_env(&args);
+
+    let cli = match Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            use clap::error::ErrorKind;
+            // Help and version are not errors. clap prints them via error.exit()
+            // and returns exit code 0. Bypass the JSON-envelope path so we don't
+            // emit a self-contradicting `ok: false` envelope paired with exit 0.
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp
+                    | ErrorKind::DisplayVersion
+                    | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ) {
+                error.exit();
+            }
+            if reporter_mode == ReporterMode::Human {
+                error.exit();
+            }
+            emit_top_level_error(
+                reporter_mode,
+                "rbtc",
+                started_at,
+                ErrorCode::Usage,
+                error.to_string(),
+            );
+            std::process::exit(error.exit_code());
+        }
+    };
+    let command_path = command_path(&cli);
+
+    match run(cli, reporter_mode, started_at).await {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            if reporter_mode == ReporterMode::Human {
+                eprintln!("rbtc: {error:#}");
+            } else {
+                emit_top_level_error(
+                    reporter_mode,
+                    &command_path,
+                    started_at,
+                    ErrorCode::Internal,
+                    format!("{error:#}"),
+                );
+            }
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run() -> Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
     let Some(command) = cli.command else {
+        if reporter_mode.is_json() {
+            emit_top_level_error(
+                reporter_mode,
+                "rbtc",
+                started_at,
+                ErrorCode::Usage,
+                "missing subcommand".to_string(),
+            );
+            return Ok(2);
+        }
         Cli::command().print_help()?;
         println!();
-        return Ok(());
+        return Ok(0);
     };
     match command {
-        Command::Doctor(args) => doctor(args).await,
-        Command::Models(args) => models(args).await,
-        Command::Providers(args) => providers(args),
-        Command::Health(args) => health(args).await,
-        Command::Smoke(args) => smoke(args).await,
-        Command::Init(args) => init_project(args),
-        Command::Install(args) => install(args),
-        Command::Skills(args) => skills(args),
-        Command::Run(args) => run_mode(args).await,
-        Command::GuardDiff(args) => guard_diff(args),
-        Command::Score(args) => score(args),
-        Command::Scorecards => scorecards(),
-        Command::CommentCard(args) => comment_card(args),
-        Command::Retro(args) => retrospective(args),
+        Command::Doctor(args) => doctor(args, reporter_mode, started_at).await,
+        Command::Models(args) => {
+            models(args, reporter_mode.is_json()).await?;
+            Ok(0)
+        }
+        Command::Providers(args) => {
+            providers(args, reporter_mode.is_json())?;
+            Ok(0)
+        }
+        Command::Health(args) => {
+            health(args).await?;
+            Ok(0)
+        }
+        Command::Smoke(args) => {
+            smoke(args).await?;
+            Ok(0)
+        }
+        Command::Init(args) => {
+            init_project(args)?;
+            Ok(0)
+        }
+        Command::Install(args) => {
+            install(args)?;
+            Ok(0)
+        }
+        Command::Skills(args) => {
+            skills(args, reporter_mode.is_json())?;
+            Ok(0)
+        }
+        Command::Run(args) => {
+            run_mode(args).await?;
+            Ok(0)
+        }
+        Command::GuardDiff(args) => {
+            guard_diff(args)?;
+            Ok(0)
+        }
+        Command::Score(args) => {
+            score(args)?;
+            Ok(0)
+        }
+        Command::Scorecards => {
+            scorecards()?;
+            Ok(0)
+        }
+        Command::CommentCard(args) => {
+            comment_card(args)?;
+            Ok(0)
+        }
+        Command::Retro(args) => {
+            retrospective(args)?;
+            Ok(0)
+        }
     }
+}
+
+/// Detects output mode before clap parsing so parse/setup errors can still emit envelopes.
+///
+/// This intentionally uses a simple token scan; an argument value literally equal to `--json`
+/// or `--quiet` can be mistaken for a global output flag before clap knows the command shape.
+fn reporter_mode_from_args_and_env(args: &[OsString]) -> ReporterMode {
+    let mut json = env_truthy("REBOTICA_JSON");
+    let mut quiet = env_truthy("REBOTICA_QUIET");
+    for arg in args.iter().skip(1).filter_map(|arg| arg.to_str()) {
+        match arg {
+            "--json" => json = true,
+            "--quiet" => quiet = true,
+            _ => {}
+        }
+    }
+    ReporterMode::from_flags(json, quiet)
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn command_path(cli: &Cli) -> String {
+    match &cli.command {
+        Some(Command::Doctor(_)) => "doctor",
+        Some(Command::Models(args)) => match &args.command {
+            Some(ModelsCommand::Configure(_)) => "models configure",
+            None => "models",
+        },
+        Some(Command::Providers(_)) => "providers",
+        Some(Command::Health(_)) => "health",
+        Some(Command::Smoke(_)) => "smoke",
+        Some(Command::Init(_)) => "init",
+        Some(Command::Install(_)) => "install",
+        Some(Command::Skills(args)) => match &args.command {
+            SkillsCommand::List(_) => "skills list",
+            SkillsCommand::Show(_) => "skills show",
+        },
+        Some(Command::Run(args)) => match &args.mode {
+            RunMode::Review(_) => "run review",
+            RunMode::Explain(_) => "run explain",
+            RunMode::Tests(_) => "run tests",
+            RunMode::Patch(_) => "run patch",
+        },
+        Some(Command::GuardDiff(_)) => "guard-diff",
+        Some(Command::Score(_)) => "score",
+        Some(Command::Scorecards) => "scorecards",
+        Some(Command::CommentCard(args)) => match &args.command {
+            CommentCardCommand::New(_) => "comment-card new",
+            CommentCardCommand::List(_) => "comment-card list",
+            CommentCardCommand::Show(_) => "comment-card show",
+            CommentCardCommand::Dismiss(_) => "comment-card dismiss",
+            CommentCardCommand::Consent(_) => "comment-card consent",
+            CommentCardCommand::Submit(_) => "comment-card submit",
+        },
+        Some(Command::Retro(_)) => "retro",
+        None => "rbtc",
+    }
+    .to_string()
+}
+
+fn emit_top_level_error(
+    reporter_mode: ReporterMode,
+    command: &str,
+    started_at: DateTime<Utc>,
+    code: ErrorCode,
+    message: String,
+) {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let envelope = Envelope::builder("error")
+        .command(command)
+        .started_at(started_at)
+        .error(EnvelopeError {
+            code,
+            message,
+            details: None,
+        })
+        .build();
+    let _ = reporter.emit(&envelope);
 }
 
 async fn run_mode(args: RunArgs) -> Result<()> {
@@ -587,7 +763,12 @@ async fn run_mode(args: RunArgs) -> Result<()> {
     }
 }
 
-async fn doctor(args: DoctorArgs) -> Result<()> {
+async fn doctor(
+    args: DoctorArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
     let cwd = std::env::current_dir()?;
     let mut checks = Vec::new();
 
@@ -717,11 +898,23 @@ async fn doctor(args: DoctorArgs) -> Result<()> {
     }
 
     let failed = checks.iter().any(|check| check.status == "fail");
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&checks)?);
+    if reporter.is_json() {
+        let mut builder = Envelope::builder("doctor")
+            .command("doctor")
+            .started_at(started_at)
+            .data(&checks);
+        if failed {
+            builder = builder.error(EnvelopeError {
+                code: ErrorCode::Config,
+                message: "doctor found failing checks".to_string(),
+                details: None,
+            });
+        }
+        let envelope = builder.build();
+        reporter.emit(&envelope)?;
     } else {
         for check in &checks {
-            println!(
+            reporter.human(&format!(
                 "{:<5} {:<24} {}{}",
                 check.status,
                 check.id,
@@ -731,21 +924,27 @@ async fn doctor(args: DoctorArgs) -> Result<()> {
                     .as_ref()
                     .map(|detail| format!(" ({detail})"))
                     .unwrap_or_default()
-            );
+            ))?;
         }
     }
 
     if failed {
-        Err(anyhow!("doctor found failing checks"))
+        if reporter.is_json() {
+            Ok(1)
+        } else {
+            Err(anyhow!("doctor found failing checks"))
+        }
     } else {
-        Ok(())
+        Ok(0)
     }
 }
 
-async fn models(args: ModelsArgs) -> Result<()> {
+async fn models(args: ModelsArgs, json: bool) -> Result<()> {
     if let Some(command) = args.command {
         return match command {
-            ModelsCommand::Configure(configure_args) => configure_models(configure_args).await,
+            ModelsCommand::Configure(configure_args) => {
+                configure_models(configure_args, json).await
+            }
         };
     }
 
@@ -771,7 +970,7 @@ async fn models(args: ModelsArgs) -> Result<()> {
         }))
     };
 
-    if args.json {
+    if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
@@ -807,7 +1006,7 @@ async fn models(args: ModelsArgs) -> Result<()> {
     Ok(())
 }
 
-async fn configure_models(args: ModelConfigureArgs) -> Result<()> {
+async fn configure_models(args: ModelConfigureArgs, json: bool) -> Result<()> {
     let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
     let Some(config_path) = loaded.path.clone() else {
         return Err(anyhow!(
@@ -841,7 +1040,7 @@ async fn configure_models(args: ModelConfigureArgs) -> Result<()> {
                     error: error.to_string(),
                     next_step: model_configure_next_step(),
                 };
-                print_model_configure_report(&report, args.json)?;
+                print_model_configure_report(&report, json)?;
                 return Ok(());
             }
         };
@@ -881,14 +1080,14 @@ async fn configure_models(args: ModelConfigureArgs) -> Result<()> {
         }
     };
 
-    print_model_configure_report(&report, args.json)?;
+    print_model_configure_report(&report, json)?;
     Ok(())
 }
 
-fn providers(args: ProvidersArgs) -> Result<()> {
+fn providers(_args: ProvidersArgs, json: bool) -> Result<()> {
     let loaded = LoadedConfig::read_from(&std::env::current_dir()?)?;
     let summary = provider_summary(&loaded.config);
-    if args.json {
+    if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
         println!("Default provider: {}", loaded.config.providers.default);
@@ -1006,12 +1205,12 @@ fn install(args: InstallArgs) -> Result<()> {
     }
 }
 
-fn skills(args: SkillsArgs) -> Result<()> {
+fn skills(args: SkillsArgs, json: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
     match args.command {
-        SkillsCommand::List(args) => {
+        SkillsCommand::List(_args) => {
             let skills = discover_skills(&cwd)?;
-            if args.json {
+            if json {
                 println!("{}", serde_json::to_string_pretty(&skills)?);
                 return Ok(());
             }

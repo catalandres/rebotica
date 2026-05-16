@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 rebotica-core.workspace = true
 rebotica-git.workspace = true
 rebotica-guard.workspace = true
