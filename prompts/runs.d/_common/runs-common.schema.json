@@ -1,0 +1,22 @@
+{
+  "$id": "https://rebotica/runs-common.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["assumptions", "confidence", "risks", "next_action"],
+  "properties": {
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "confidence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "next_action": { "type": "string" }
+  }
+}

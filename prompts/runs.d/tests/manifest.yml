@@ -1,0 +1,11 @@
+kind: run.tests
+display_name: Test Proposal
+description: Propose focused missing tests for selected files.
+schema_version: 1
+inputs:
+  - files
+  - skills
+  - guard
+exit_codes:
+  - output_invalid
+  - guard_rejected

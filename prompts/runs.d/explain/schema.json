@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rebotica/run.explain.schema.json",
+  "allOf": [
+    { "$ref": "https://rebotica/runs-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["analysis"],
+      "properties": {
+        "analysis": { "type": "string" }
+      }
+    }
+  ]
+}

@@ -7,6 +7,8 @@ Rebotica's first public distribution should stay boring: a tagged source release
 - JSON-mode state commands now emit the v1 Rebotica envelope; consumers should read `rebotica`, `kind`, `ok`, `data`, and `error` from the envelope.
 - `--json` is now a global flag, so existing placements such as `rbtc doctor --json` continue to parse while `rbtc --json doctor` is also accepted. `--quiet` and `REBOTICA_QUIET` imply JSON mode for envelope output.
 - `--help` and `--version` always print human-readable text and exit 0, even with `--json` or `--quiet` set. These are not errors and do not produce envelopes.
+- Built-in `run review`, `run explain`, `run tests`, and `run patch` now route through the `run.*` plugin engine and emit schema-validated v1 envelopes.
+- **Behavior change:** `rbtc run review --model X --model Y` (multi-model side-by-side invocation) is no longer supported under the v1 envelope contract. The single-result envelope shape doesn't accommodate N model responses without an explicit redesign; the feature is tracked for return in #40. Use a shell loop in the meantime: `for m in X Y; do rbtc run review --model $m --json; done`.
 
 ### Envelope contract
 
@@ -27,10 +29,12 @@ All state and diagnostic commands now emit the v1 envelope contract in JSON mode
 - `health`
 - `smoke`
 - `guard-diff`
+- `run review`
+- `run explain`
+- `run tests`
+- `run patch`
 
 The exit-code taxonomy is final and documented in [exit-codes.md](exit-codes.md).
-
-The only commands not yet on the envelope contract are `run review`, `run explain`, `run tests`, and `run patch`. They are intentionally deferred to issue #5, the `run.*` plugin-host rewrite.
 
 ## Local Install Harness
 

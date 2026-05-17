@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rebotica/run.patch.schema.json",
+  "allOf": [
+    { "$ref": "https://rebotica/runs-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["patch", "files_touched"],
+      "properties": {
+        "patch": { "type": "string" },
+        "files_touched": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

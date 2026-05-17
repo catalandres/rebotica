@@ -185,6 +185,70 @@ fn one_shot_chat_server(response_text: &str) -> String {
     format!("http://{addr}/v1")
 }
 
+fn one_shot_chat_capture_server(response_text: &str) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    let body = format!(
+        r#"{{"choices":[{{"message":{{"content":{}}}}}]}}"#,
+        serde_json::to_string(response_text).unwrap()
+    );
+    let (request_tx, request_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test server should accept");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let mut expected_len = None;
+        loop {
+            let read = stream.read(&mut buffer).expect("test server should read");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if expected_len.is_none() {
+                if let Some(header_end) = find_headers_end(&request) {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_len = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    expected_len = Some(header_end + 4 + content_len);
+                }
+            }
+            if expected_len
+                .map(|expected| request.len() >= expected)
+                .unwrap_or(false)
+            {
+                break;
+            }
+        }
+        let _ = request_tx.send(String::from_utf8_lossy(&request).to_string());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test server should respond");
+    });
+    (format!("http://{addr}/v1"), request_rx)
+}
+
+fn find_headers_end(request: &[u8]) -> Option<usize> {
+    request.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn fenced_json(value: Value) -> String {
+    format!("```json\n{}\n```", serde_json::to_string(&value).unwrap())
+}
+
 fn unavailable_base_url() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let addr = listener
@@ -280,49 +344,45 @@ fn top_level_help_guides_common_workflows() {
 
 #[test]
 fn run_help_lists_delegated_modes() {
-    let output = rbtc()
-        .args(["help", "run"])
-        .output()
-        .expect("rbtc help run should run");
+    let temp = TempDir::new("run-help");
+    let output = run_in(temp.path(), &["run", "missing-mode", "--help"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("unknown run mode: missing-mode"));
+    assert!(stdout.contains("Available run modes:"));
     assert!(stdout.contains("review"));
-    assert!(stdout.contains("Ask a local model to review a selected git diff."));
+    assert!(stdout.contains("Review a diff for correctness"));
     assert!(stdout.contains("explain"));
-    assert!(stdout.contains("Ask a local model to explain selected files."));
+    assert!(stdout.contains("Explain selected files"));
     assert!(stdout.contains("tests"));
-    assert!(stdout.contains("Ask a local model to propose focused tests for selected files."));
+    assert!(stdout.contains("Propose focused missing tests"));
     assert!(stdout.contains("patch"));
-    assert!(stdout.contains("Ask a local model for a dry-run unified diff from a task envelope."));
+    assert!(stdout.contains("Propose a dry-run unified diff"));
 }
 
 #[test]
 fn run_patch_help_explains_inputs_and_safety() {
-    let output = rbtc()
-        .args(["help", "run", "patch"])
-        .output()
-        .expect("rbtc help run patch should run");
+    let temp = TempDir::new("run-patch-help");
+    let output = run_in(temp.path(), &["run", "patch", "--help"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Ask a local model for a dry-run unified diff"));
+    assert!(stdout.contains("Propose a dry-run unified diff"));
     assert!(stdout.contains("TASK_ENVELOPE"));
-    assert!(stdout.contains("Print the proposed diff and run metadata without applying anything."));
-    assert!(stdout.contains("currently rejected in v0.1"));
+    assert!(stdout.contains("Preserve dry-run patch behavior"));
+    assert!(stdout.contains("Rejected; direct application is disabled"));
 }
 
 #[test]
 fn run_review_help_explains_diff_sources() {
-    let output = rbtc()
-        .args(["help", "run", "review"])
-        .output()
-        .expect("rbtc help run review should run");
+    let temp = TempDir::new("run-review-help");
+    let output = run_in(temp.path(), &["run", "review", "--help"]);
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Ask a local model to review a selected git diff"));
-    assert!(stdout.contains("Repeat to run multiple models side by side."));
+    assert!(stdout.contains("Review a diff for correctness"));
+    assert!(stdout.contains("Model alias or raw provider model id"));
     assert!(stdout.contains("--base <REF>"));
     assert!(stdout.contains("--range <REV_RANGE>"));
     assert!(stdout.contains("--cached"));
@@ -330,6 +390,18 @@ fn run_review_help_explains_diff_sources() {
     assert!(stdout.contains("--max-lines <COUNT>"));
     assert!(stdout.contains("--skill <SKILL>"));
     assert!(stdout.contains("Review staged changes"));
+}
+
+#[test]
+fn run_dynamic_help_bypasses_quiet_envelope() {
+    let temp = TempDir::new("run-help-quiet");
+
+    let output = run_in(temp.path(), &["run", "review", "--quiet", "--help"]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Code Review"));
+    assert!(!stdout.contains("\"rebotica\""));
 }
 
 #[test]
@@ -675,6 +747,378 @@ fn smoke_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
     );
     assert_eq!(json["data"]["response"], "LOCAL_OK");
     assert!(json["error"].is_null());
+}
+
+#[test]
+fn run_built_in_modes_emit_valid_envelopes_and_artifacts() {
+    let cases = [
+        (
+            "review",
+            vec!["review"],
+            serde_json::json!({
+                "assumptions": [],
+                "confidence": 8,
+                "risks": [],
+                "next_action": "review findings",
+                "findings": []
+            }),
+            "findings",
+        ),
+        (
+            "explain",
+            vec!["explain", "README.md"],
+            serde_json::json!({
+                "assumptions": [],
+                "confidence": 8,
+                "risks": [],
+                "next_action": "use analysis",
+                "analysis": "README responsibilities."
+            }),
+            "analysis",
+        ),
+        (
+            "tests",
+            vec!["tests", "README.md"],
+            serde_json::json!({
+                "assumptions": [],
+                "confidence": 8,
+                "risks": [],
+                "next_action": "choose tests",
+                "proposed_tests": []
+            }),
+            "proposed_tests",
+        ),
+        (
+            "patch",
+            vec!["patch", ".rebotica/tasks/task.yml", "--dry-run"],
+            serde_json::json!({
+                "assumptions": [],
+                "confidence": 8,
+                "risks": [],
+                "next_action": "review patch",
+                "patch": "",
+                "files_touched": []
+            }),
+            "patch",
+        ),
+    ];
+
+    for (mode, mut mode_args, response, expected_field) in cases {
+        let temp = TempDir::new(&format!("run-{mode}"));
+        init_git_repo(temp.path());
+        fs::create_dir_all(temp.path().join(".rebotica/tasks")).unwrap();
+        fs::write(
+            temp.path().join(".rebotica/tasks/task.yml"),
+            "task_id: test\nmode: patch\ngoal: Change README\nallowed_files:\n  - README.md\nforbidden_files: []\nsensitive_files: []\ncommands_to_run: []\nmax_changed_lines: 50\nmax_files_changed: 1\noutput_format: json\nacceptance_criteria: []\nrisk_level: low\n",
+        )
+        .unwrap();
+        let home = temp.path().join("home");
+        let home_s = home.to_string_lossy().to_string();
+        let base_url = one_shot_chat_server(&fenced_json(response));
+        let mut args = vec!["--quiet", "run"];
+        args.append(&mut mode_args);
+        args.extend(["--base-url", &base_url, "--model", "local-model"]);
+
+        let output = run_in_env(temp.path(), &args, &[("HOME", &home_s)]);
+
+        assert!(
+            output.status.success(),
+            "run {mode} failed: {}\nstdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["kind"], format!("run.{mode}"));
+        assert_eq!(json["ok"], true);
+        assert!(
+            json["data"][expected_field].is_array() || json["data"][expected_field].is_string()
+        );
+        let run_id = json["run_id"].as_str().expect("run_id should be set");
+        let run_dir = home.join(".rebotica/runs").join(run_id);
+        assert!(run_dir.join("model-response.md").is_file());
+        assert!(run_dir.join("parsed-output.json").is_file());
+        assert!(run_dir.join("envelope.json").is_file());
+    }
+}
+
+#[test]
+fn run_prompt_assembly_preserves_adapter_block_order() {
+    let temp = TempDir::new("run-prompt-order");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 8,
+        "risks": [],
+        "next_action": "use analysis",
+        "analysis": "README responsibilities."
+    }));
+    let (base_url, request_rx) = one_shot_chat_capture_server(&response);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--quiet",
+            "run",
+            "explain",
+            "README.md",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(
+        output.status.success(),
+        "run explain failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request = request_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("captured chat request should arrive");
+    let body = request
+        .split("\r\n\r\n")
+        .nth(1)
+        .expect("request should contain a body");
+    let body_json: Value = serde_json::from_str(body).unwrap();
+    let prompt = body_json["messages"][1]["content"].as_str().unwrap();
+    let project = prompt.find("## Project Config").unwrap();
+    let envelope = prompt.find("## Task Envelope").unwrap();
+    let file = prompt.find("## File: README.md").unwrap();
+    let mode_prompt = prompt.find("# File Explanation Mode").unwrap();
+    assert!(project < envelope);
+    assert!(envelope < file);
+    assert!(file < mode_prompt);
+}
+
+#[test]
+fn run_output_invalid_persists_raw_and_failure_details() {
+    let temp = TempDir::new("run-output-invalid-parse");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let base_url = one_shot_chat_server("not json");
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--quiet",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert_eq!(output.status.code(), Some(21));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "output_invalid");
+    assert_eq!(json["error"]["details"]["mode"], "review");
+    assert_eq!(json["error"]["details"]["extraction"], "fallback");
+    let run_id = json["run_id"].as_str().expect("run_id should be set");
+    let run_dir = home.join(".rebotica/runs").join(run_id);
+    assert!(run_dir.join("model-response.md").is_file());
+    assert!(run_dir.join("parse-failure.json").is_file());
+    assert!(run_dir.join("envelope.json").is_file());
+    assert!(!run_dir.join("parsed-output.json").exists());
+}
+
+#[test]
+fn run_validation_failure_reports_schema_errors() {
+    let temp = TempDir::new("run-output-invalid-validation");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 11,
+        "risks": [],
+        "next_action": "review findings",
+        "findings": []
+    }));
+    let base_url = one_shot_chat_server(&response);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--quiet",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert_eq!(output.status.code(), Some(21));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "output_invalid");
+    assert_eq!(json["error"]["details"]["extraction"], "fence");
+    assert!(json["error"]["details"]["validation_errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|error| { error["instance_path"] == "/confidence" && error["keyword"] == "maximum" }));
+}
+
+#[test]
+fn run_provider_failure_persists_typed_failure_without_raw_response() {
+    let temp = TempDir::new("run-provider-failure");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let base_url = unavailable_base_url();
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--quiet",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert_eq!(output.status.code(), Some(10));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "provider_unavailable");
+    let run_id = json["run_id"].as_str().expect("run_id should be set");
+    let run_dir = home.join(".rebotica/runs").join(run_id);
+    assert!(run_dir.join("provider-failure.json").is_file());
+    assert!(run_dir.join("envelope.json").is_file());
+    assert!(!run_dir.join("model-response.md").exists());
+}
+
+#[test]
+fn broken_project_layer_falls_through_with_warning_suppressed_by_quiet() {
+    let temp = TempDir::new("run-broken-layer");
+    init_git_repo(temp.path());
+    fs::create_dir_all(temp.path().join(".rebotica/runs.d/review")).unwrap();
+    fs::write(
+        temp.path().join(".rebotica/runs.d/review/manifest.yml"),
+        "kind: run.review\n",
+    )
+    .unwrap();
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 8,
+        "risks": [],
+        "next_action": "review findings",
+        "findings": []
+    }));
+
+    let base_url = one_shot_chat_server(&response);
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("warning: plugin"));
+
+    let base_url = one_shot_chat_server(&response);
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--quiet",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}
+
+#[test]
+fn run_fallback_json_extraction_warns_under_json_mode() {
+    let temp = TempDir::new("run-fallback-extraction");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let response = "analysis first {\"assumptions\":[],\"confidence\":8,\"risks\":[],\"next_action\":\"review\",\"findings\":[]}";
+    let base_url = one_shot_chat_server(response);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("used the last balanced"));
+
+    let base_url = one_shot_chat_server(response);
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--quiet",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+}
+
+#[test]
+fn run_unknown_adapter_argument_is_usage_error() {
+    let temp = TempDir::new("run-unknown-arg");
+    init_git_repo(temp.path());
+
+    let output = run_in(temp.path(), &["--quiet", "run", "review", "--typo"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "usage");
+    assert_eq!(json["run_id"], serde_json::Value::Null);
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unknown argument for run review: --typo"));
 }
 
 #[test]

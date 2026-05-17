@@ -2,8 +2,6 @@
 
 Rebotica JSON and quiet output include a stable `error.code` value when a migrated command fails. The process exit code is derived from that typed error code, not from matching error-message text.
 
-Legacy commands that have not been migrated to envelopes yet keep their existing human-oriented behavior. This includes `run ...`.
-
 ## For Consumers
 
 | `error.code` | Exit | Meaning | Consumer action |
@@ -51,6 +49,33 @@ Envelope failures may include `error.details` with code-specific context. Consum
 
 ```json
 { "rejected_paths": ["secrets/key.txt"], "forbidden_pattern": "secrets/" }
+```
+
+`output_invalid` when model output could not be parsed:
+
+```json
+{
+  "mode": "review",
+  "parse_error": "expected value at line 1 column 1",
+  "extraction": "fallback"
+}
+```
+
+`output_invalid` when parsed output failed schema validation:
+
+```json
+{
+  "mode": "review",
+  "extraction": "fence",
+  "validation_errors": [
+    {
+      "instance_path": "/confidence",
+      "schema_path": "/allOf/0/properties/confidence/maximum",
+      "keyword": "maximum",
+      "message": "11 is greater than the maximum of 10"
+    }
+  ]
+}
 ```
 
 `over_limit`:

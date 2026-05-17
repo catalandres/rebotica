@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rebotica/run.review.schema.json",
+  "allOf": [
+    { "$ref": "https://rebotica/runs-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["findings"],
+      "properties": {
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["severity", "summary"],
+            "properties": {
+              "severity": { "enum": ["critical", "major", "minor", "nit"] },
+              "category": { "type": "string" },
+              "file": { "type": "string" },
+              "line": { "type": "integer" },
+              "summary": { "type": "string" },
+              "fix": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

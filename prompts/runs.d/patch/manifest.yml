@@ -1,0 +1,11 @@
+kind: run.patch
+display_name: Patch Proposal
+description: Propose a dry-run unified diff from a task envelope.
+schema_version: 1
+inputs:
+  - task_envelope
+  - skills
+  - guard
+exit_codes:
+  - output_invalid
+  - guard_rejected

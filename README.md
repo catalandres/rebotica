@@ -17,12 +17,13 @@ Version `0.2.0`. Single-user project; the only consumer is the author's coordina
 What's stable:
 
 - The v1 JSON envelope contract for every state command (`doctor`, `providers`, `models`, `models configure`, `health`, `smoke`, `init`, `install`, `skills list/show`, `guard-diff`, `score`, `scorecards`, `comment-card *`, `retro`).
+- The v1 JSON envelope contract for built-in model-backed run modes (`run review`, `run explain`, `run tests`, `run patch`).
 - The typed `ErrorCode` taxonomy and exit-code mapping.
 - The CLI surface for the commands above (flags, env vars, output channels).
 
 What's in flux:
 
-- `run review`, `run explain`, `run tests`, `run patch` are being rebuilt as a plugin host under epic [#5](https://github.com/catalandres/rebotica/issues/5). They exist today but their output contract is going to change. Do not parse their stdout from another tool yet.
+- The mode-author walkthrough for custom `run.*` plugins is still pending under epic [#5](https://github.com/catalandres/rebotica/issues/5).
 
 ## Requirements
 
@@ -94,7 +95,7 @@ See [docs/output-contract.md](docs/output-contract.md) for the full envelope spe
 - **Skills:** `skills list`, `skills show`.
 - **Policy and safety:** `guard-diff`.
 - **Feedback and learning:** `score`, `scorecards`, `comment-card *`, `retro`.
-- **Delegated work** (output contract in flux, see above): `run review`, `run explain`, `run tests`, `run patch`.
+- **Delegated work:** `run review`, `run explain`, `run tests`, `run patch`.
 
 ## State on disk
 

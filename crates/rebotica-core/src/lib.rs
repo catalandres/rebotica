@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod output;
+pub mod run;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ProjectConfig {

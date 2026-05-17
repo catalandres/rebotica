@@ -4,7 +4,7 @@ Practical guide to running `rbtc`. The wire format is specified in [output-contr
 
 ## Five-minute path
 
-A coordinating agent wiring `rbtc` as a subprocess needs five things: install, set quiet mode, parse the envelope, branch on the exit code, and know what is not yet stable.
+A coordinating agent wiring `rbtc` as a subprocess needs four things: install, set quiet mode, parse the envelope, and branch on the exit code.
 
 ### Install
 
@@ -78,10 +78,6 @@ fi
 
 See [exit-codes.md](exit-codes.md) for the full table and per-code `error.details` shapes.
 
-### What is not yet stable
-
-`run review`, `run explain`, `run tests`, and `run patch` are not yet on the v1 envelope. They are being rebuilt as a plugin host under epic [#5](https://github.com/catalandres/rebotica/issues/5). They exist today and you can invoke them, but do not parse their stdout from another tool. Every other command listed below is on the envelope.
-
 ## Global flags and environment
 
 `--json` and `--quiet` are global; they are accepted before or after the subcommand.
@@ -111,6 +107,7 @@ Every state command emits the envelope shape documented in [output-contract.md](
 | Skills | `skills.list`, `skills.show` |
 | Policy and safety | `guard-diff` |
 | Feedback and learning | `score`, `scorecards`, `comment-card.new`, `comment-card.list`, `comment-card.show`, `comment-card.dismiss`, `comment-card.consent`, `comment-card.submit`, `retro` |
+| Delegated work | `run.review`, `run.explain`, `run.tests`, `run.patch` |
 
 The literal `"error"` kind appears when an envelope must be emitted before a subcommand can be resolved (parse failure, missing subcommand, top-level cancellation). Branch on `error.code` only when you see it.
 
@@ -339,8 +336,15 @@ rbtc comment-card submit CARD_ID
 
 `rbtc retro --from-run RUN_ID` creates a retrospective template from a saved run.
 
-## `run.*`: not yet on the envelope
+## `run.*`
 
-`run review`, `run explain`, `run tests`, and `run patch` exist and can be invoked, but their output is not yet on the v1 envelope. They are being rebuilt as a plugin host under epic [#5](https://github.com/catalandres/rebotica/issues/5).
+`run review`, `run explain`, `run tests`, and `run patch` are model-backed plugin modes resolved from `runs.d/` registries. In `--json` or `--quiet` mode they emit the v1 envelope kinds `run.review`, `run.explain`, `run.tests`, and `run.patch`.
 
-Do not parse their stdout from another tool. When they are migrated, the kinds `run.review`, `run.explain`, `run.tests`, and `run.patch` will start emitting and this section will document their `data` shapes.
+Each mode validates the model response against its declared JSON Schema. `output_invalid` means the provider returned text but Rebotica could not extract JSON or the parsed JSON did not match the schema. When a run reaches the provider call, the envelope carries `run_id` and the audit artifacts are written under `~/.rebotica/runs/{run_id}/`.
+
+Dynamic mode help comes from the registry:
+
+```sh
+rbtc run review --help
+rbtc run patch --help
+```
