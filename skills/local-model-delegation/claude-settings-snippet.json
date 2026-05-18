@@ -1,7 +1,9 @@
 {
-  "_comment": "Merge this into .claude/settings.json. The 'rebotica' key becomes the MCP server prefix: tools surface as mcp__rebotica__review_diff, etc. Change `command` if rbtc is not on PATH (use an absolute path).",
+  "_comment": "Project-scope MCP server registration. The simplest install path is `claude mcp add --scope project rebotica rbtc -- mcp serve`, which writes the entry below to `.mcp.json` at the project root. If you prefer to edit by hand, save the `mcpServers` block (everything except `_comment`) to `.mcp.json` at the project root. The 'rebotica' key becomes the MCP server prefix: tools surface as mcp__rebotica__review_diff, etc. Change `command` if `rbtc` is not on PATH (use an absolute path).",
+  "_target_file": ".mcp.json (at project root, NOT .claude/settings.json)",
   "mcpServers": {
     "rebotica": {
+      "type": "stdio",
       "command": "rbtc",
       "args": ["mcp", "serve"]
     }
