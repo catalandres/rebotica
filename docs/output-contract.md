@@ -113,7 +113,7 @@ These kinds are emitted today:
 | `skills.list` | `rbtc skills list` | Canonical and project-local skills with source attribution. |
 | `skills.show` | `rbtc skills show` | The selected skill's metadata and body. |
 | `guard-diff` | `rbtc guard-diff` | `{ diff_source, changed_files, changed_lines, max_files, max_lines, effective_forbidden_paths }`. |
-| `score` | `rbtc score` | The run id, the recorded score, and where it was written. |
+| `score` | `rbtc score` | The run id, the recorded disposition (`accept`, `reject`, `edit_then_use`, `unscored`), optional rating, labels, notes, and the on-disk paths the score event wrote to. |
 | `scorecards` | `rbtc scorecards` | Aggregate model scorecard summary. |
 | `comment-card.new` | `rbtc comment-card new` | The created card's id and path. |
 | `comment-card.list` | `rbtc comment-card list` | Pending, submitted, and dismissed cards. |
@@ -155,6 +155,16 @@ When the provider call fails before returning a response, Rebotica writes:
 `model-response.md` is present if and only if the provider returned a response body. Its absence means the model was never reached or returned no response body to persist.
 
 Failure envelopes from after run allocation, including `output_invalid` and provider failures, carry the same non-null `run_id` so consumers can locate the persisted artifacts. Failures before run allocation, such as unknown modes or guard rejection, keep `run_id: null`.
+
+### Scorecard write-back
+
+Every run also gets a `scorecard.yml` written at allocation time with `disposition: unscored`. `rbtc score RUN_ID --disposition <accept|reject|edit_then_use|unscored>` updates that file in place and additionally writes:
+
+- `feedback.yml` — the per-call score event with disposition, optional rating, labels, and notes.
+- An appended row in `~/.rebotica/model-events.jsonl`.
+- A rebuilt `~/.rebotica/model-scorecards.yml` aggregate.
+
+The `--disposition` flag takes precedence over the legacy `--accepted` / `--rejected` shorthands; the shorthands continue to work and map to `accept` / `reject`.
 
 ## Reserved kinds
 
