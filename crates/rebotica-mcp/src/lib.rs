@@ -73,6 +73,9 @@ impl ApprenticeServer {
         adapter_args: Vec<String>,
         command: &str,
     ) -> Result<CallToolResult, McpError> {
+        if offline_probe_enabled() {
+            return Ok(offline_probe_response(mode, command));
+        }
         let request = RunRequest {
             mode: mode.to_string(),
             adapter_args,
@@ -186,6 +189,9 @@ impl ApprenticeServer {
         description = "Check that the local model provider endpoint is reachable and report which models it currently exposes. Use when delegated calls are failing to determine whether the provider is the cause."
     )]
     async fn health_check(&self) -> Result<CallToolResult, McpError> {
+        if offline_probe_enabled() {
+            return Ok(offline_probe_response("health_check", "mcp.health_check"));
+        }
         let loaded = rebotica_core::LoadedConfig::read_from(&self.cwd)
             .map_err(|e| McpError::internal_error(format!("failed to read config: {e:#}"), None))?;
         let settings = provider_settings(&loaded, ProviderArgs::default()).map_err(|e| {
@@ -229,6 +235,40 @@ impl ServerHandler for ApprenticeServer {
                     .to_string(),
             )
     }
+}
+
+/// Environment variable that short-circuits tool handlers to return a
+/// canned stub instead of calling the provider. Used by
+/// `scripts/mcp-eval.sh` to measure tool-invocation rates without
+/// burning real provider tokens.
+const OFFLINE_PROBE_ENV: &str = "REBOTICA_MCP_OFFLINE_PROBE";
+
+fn offline_probe_enabled() -> bool {
+    std::env::var_os(OFFLINE_PROBE_ENV).is_some_and(|value| {
+        let value = value.to_string_lossy();
+        let trimmed = value.trim().to_ascii_lowercase();
+        !matches!(trimmed.as_str(), "" | "0" | "false" | "off" | "no")
+    })
+}
+
+fn offline_probe_response(mode: &str, command: &str) -> CallToolResult {
+    let run_id = rebotica_runlog::make_id();
+    let kind = if mode == "health_check" {
+        "health_check".to_string()
+    } else {
+        format!("run.{mode}")
+    };
+    let body = serde_json::json!({
+        "run_id": run_id,
+        "kind": kind,
+        "command": command,
+        "data": {
+            "offline_probe": true,
+            "note": "REBOTICA_MCP_OFFLINE_PROBE is set; no provider call was made. \
+                     This response exists only to measure tool-invocation rates."
+        }
+    });
+    CallToolResult::success(vec![Content::text(body.to_string())])
 }
 
 /// Build the registry from harness paths + cwd. Mirrors the CLI's
