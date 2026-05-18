@@ -185,6 +185,37 @@ fn one_shot_chat_server(response_text: &str) -> String {
     format!("http://{addr}/v1")
 }
 
+/// Serve a fixed sequence of canned chat responses, one per connection.
+/// The listener keeps accepting until every response has been served, then
+/// drops. Tests that want N sequential dispatches against a single base_url
+/// (e.g. `rbtc compare`) use this so each model call sees the same provider.
+fn n_shot_chat_server(responses: Vec<String>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let addr = listener
+        .local_addr()
+        .expect("test server addr should resolve");
+    thread::spawn(move || {
+        for response_text in responses {
+            let (mut stream, _) = listener.accept().expect("test server should accept");
+            let mut buffer = [0_u8; 4096];
+            let _ = stream.read(&mut buffer);
+            let body = format!(
+                r#"{{"choices":[{{"message":{{"content":{}}}}}]}}"#,
+                serde_json::to_string(&response_text).unwrap()
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test server should respond");
+        }
+    });
+    format!("http://{addr}/v1")
+}
+
 fn one_shot_chat_capture_server(response_text: &str) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let addr = listener
@@ -1900,4 +1931,195 @@ fn comment_card_list_json_emits_nested_command_envelope() {
         .iter()
         .any(|card| card["status"] == "pending"
             && card["title"] == "Review needs clearer next steps"));
+}
+
+#[test]
+fn compare_runs_each_model_and_emits_aggregated_envelope() {
+    let temp = TempDir::new("compare-two-models");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+
+    // Two distinct review responses so we can verify each model row carries
+    // its own finding count and confidence — not just the same payload twice.
+    let response_a = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 8,
+        "risks": [],
+        "next_action": "Prime should review the listed findings.",
+        "findings": [
+            {
+                "severity": "major",
+                "category": "correctness",
+                "file": "src/lib.rs",
+                "line": 10,
+                "summary": "Off-by-one in loop.",
+                "fix": "Use <= instead of <."
+            }
+        ]
+    }));
+    let response_b = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 5,
+        "risks": [],
+        "next_action": "Prime should consider whether the broader pattern needs work.",
+        "findings": [
+            { "severity": "minor", "summary": "Naming nit one." },
+            { "severity": "minor", "summary": "Naming nit two." },
+            { "severity": "nit",   "summary": "Style nit." }
+        ]
+    }));
+    let base_url = n_shot_chat_server(vec![response_a, response_b]);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "compare",
+            "review",
+            "--model",
+            "alpha",
+            "--model",
+            "beta",
+            "--base-url",
+            &base_url,
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(
+        output.status.success(),
+        "compare failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["kind"], "compare.review");
+    assert_eq!(json["command"], "compare review");
+    assert_eq!(json["data"]["mode"], "review");
+
+    let models = json["data"]["models"].as_array().expect("models array");
+    assert_eq!(models.len(), 2, "one row per --model");
+
+    assert_eq!(models[0]["model"], "alpha");
+    assert_eq!(models[0]["ok"], true);
+    assert_eq!(models[0]["confidence"], 8);
+    assert_eq!(models[0]["n_findings"], 1);
+    let alpha_id = models[0]["run_id"].as_str().expect("alpha run_id");
+    assert!(!alpha_id.is_empty());
+
+    assert_eq!(models[1]["model"], "beta");
+    assert_eq!(models[1]["ok"], true);
+    assert_eq!(models[1]["confidence"], 5);
+    assert_eq!(models[1]["n_findings"], 3);
+    let beta_id = models[1]["run_id"].as_str().expect("beta run_id");
+    assert_ne!(alpha_id, beta_id, "each model gets its own run_id");
+
+    // Each per-model dispatch persisted its own run directory and envelope.
+    for run_id in [alpha_id, beta_id] {
+        let run_dir = home.join(".rebotica/runs").join(run_id);
+        assert!(
+            run_dir.join("envelope.json").is_file(),
+            "missing envelope for {run_id}"
+        );
+        let envelope_text = fs::read_to_string(run_dir.join("envelope.json")).unwrap();
+        let envelope: Value = serde_json::from_str(&envelope_text).unwrap();
+        // The per-model envelope's command records which slot it came from.
+        assert!(envelope["command"]
+            .as_str()
+            .unwrap()
+            .starts_with("compare review --model "));
+    }
+}
+
+#[test]
+fn compare_reports_per_model_failures_alongside_successes() {
+    let temp = TempDir::new("compare-mixed");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+
+    // First model returns schema-invalid JSON; second model returns a valid
+    // review. The compare envelope should carry one failure row and one
+    // success row — failures don't short-circuit subsequent models.
+    let bad_response = fenced_json(serde_json::json!({ "totally": "wrong shape" }));
+    let good_response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 7,
+        "risks": [],
+        "next_action": "ok",
+        "findings": []
+    }));
+    let base_url = n_shot_chat_server(vec![bad_response, good_response]);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "compare",
+            "review",
+            "--model",
+            "broken",
+            "--model",
+            "ok",
+            "--base-url",
+            &base_url,
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(output.status.success(), "compare itself should succeed even when individual models fail");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let models = json["data"]["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+
+    assert_eq!(models[0]["model"], "broken");
+    assert_eq!(models[0]["ok"], false);
+    assert_eq!(models[0]["error_code"], "output_invalid");
+    assert!(models[0]["confidence"].is_null());
+    assert!(models[0]["n_findings"].is_null());
+
+    assert_eq!(models[1]["model"], "ok");
+    assert_eq!(models[1]["ok"], true);
+    assert_eq!(models[1]["error_code"], serde_json::Value::Null);
+    assert_eq!(models[1]["confidence"], 7);
+}
+
+#[test]
+fn compare_with_comma_separated_models_expands_correctly() {
+    let temp = TempDir::new("compare-comma");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+
+    let response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 7,
+        "risks": [],
+        "next_action": "ok",
+        "findings": []
+    }));
+    let base_url = n_shot_chat_server(vec![response.clone(), response]);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "compare",
+            "review",
+            "--model",
+            "alpha,beta",
+            "--base-url",
+            &base_url,
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let models = json["data"]["models"].as_array().unwrap();
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["model"], "alpha");
+    assert_eq!(models[1]["model"], "beta");
 }
