@@ -15,6 +15,7 @@ chrono.workspace = true
 rebotica-core.workspace = true
 rebotica-git.workspace = true
 rebotica-guard.workspace = true
+rebotica-mcp.workspace = true
 rebotica-provider.workspace = true
 rebotica-run.workspace = true
 rebotica-runlog.workspace = true

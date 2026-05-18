@@ -5,9 +5,24 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "rebotica-mcp"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
+rebotica-core.workspace = true
+rebotica-provider.workspace = true
+rebotica-run.workspace = true
+rebotica-runlog.workspace = true
+rmcp = { version = "1.7", features = ["server", "macros", "transport-io"] }
+schemars = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

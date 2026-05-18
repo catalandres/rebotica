@@ -186,6 +186,21 @@ CREATE TABLE ledger_events (
 
 `PRAGMA user_version` is `1` for the v0.3 baseline. Future schema bumps land additive migrations and increment this number. Schema changes never alter existing rows.
 
+### MCP-initiated runs
+
+When the apprentice is invoked over MCP (via `rbtc mcp serve`), the `command` field on persisted envelopes is `mcp.<tool>` rather than `run <mode>`. Mapping:
+
+| MCP tool         | `run.*` mode | `command` on persisted envelope | `envelope_shape` on ledger |
+| ---------------- | ------------ | ------------------------------- | -------------------------- |
+| `review_diff`    | `review`     | `mcp.review_diff`               | `run_review`               |
+| `propose_tests`  | `tests`      | `mcp.propose_tests`             | `run_tests`                |
+| `explain_files`  | `explain`    | `mcp.explain_files`             | `run_explain`              |
+| `health_check`   | (no run)     | (no persisted envelope)         | (no ledger event)          |
+
+`health_check` does not invoke a model; it pings the configured provider's `/models` endpoint and returns a short status object. It does not persist a run directory or write to the ledger.
+
+The ledger's `EnvelopeShape` enum also reserves `review_diff`, `propose_tests`, `explain_files`, and `health_check` variants for future MCP-specific instrumentation. The four `run_*` shapes are what's used today.
+
 ### Event payload shapes (v0.3)
 
 `run_started`:

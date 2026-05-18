@@ -81,6 +81,8 @@ enum Command {
     Skills(SkillsArgs),
     #[command(about = "Run delegated local-model work modes.")]
     Run(RunArgs),
+    #[command(about = "Serve apprentice tools over MCP for Prime agents (Claude Code, Codex).")]
+    Mcp(McpArgs),
     #[command(about = "Check a selected git diff against forbidden paths and size limits.")]
     GuardDiff(GuardDiffArgs),
     #[command(about = "Record Prime feedback about a model run.")]
@@ -91,6 +93,20 @@ enum Command {
     CommentCard(CommentCardArgs),
     #[command(about = "Create a retrospective template for a saved run.")]
     Retro(RetroArgs),
+}
+
+#[derive(Debug, Parser)]
+struct McpArgs {
+    #[command(subcommand)]
+    command: McpCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum McpCommand {
+    #[command(
+        about = "Serve apprentice tools over stdio (the transport Claude Code and Codex expect)."
+    )]
+    Serve,
 }
 
 #[derive(Debug, Parser)]
@@ -593,6 +609,9 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             )
         }
         Command::Run(args) => run_plugin(args, reporter_mode, started_at).await,
+        Command::Mcp(args) => match args.command {
+            McpCommand::Serve => mcp_serve(reporter_mode, started_at).await,
+        },
         Command::GuardDiff(args) => handle_migrated_result(
             guard_diff(args, reporter_mode, started_at),
             reporter_mode,
@@ -684,6 +703,9 @@ fn command_path(cli: &Cli) -> String {
             SkillsCommand::Show(_) => "skills show",
         },
         Some(Command::Run(args)) => return format!("run {}", args.mode),
+        Some(Command::Mcp(args)) => match args.command {
+            McpCommand::Serve => "mcp serve",
+        },
         Some(Command::GuardDiff(_)) => "guard-diff",
         Some(Command::Score(_)) => "score",
         Some(Command::Scorecards) => "scorecards",
@@ -815,6 +837,36 @@ fn handle_migrated_result(
             Ok(code.exit_code())
         }
         Err(error) => Err(error),
+    }
+}
+
+async fn mcp_serve(reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
+    // The MCP server speaks JSON-RPC over stdout. Emitting anything else on
+    // stdout (envelope, human text) would corrupt the protocol. Failures
+    // before the server starts go via the standard envelope-on-stderr path
+    // for clarity, but the success branch produces no envelope at all —
+    // `service.waiting()` blocks until the client disconnects.
+    match rebotica_mcp::serve_stdio().await {
+        Ok(()) => Ok(0),
+        Err(error) => {
+            let mut reporter = Reporter::from_mode(reporter_mode);
+            let message = format!("MCP server failed: {error:#}");
+            if reporter.is_json() {
+                emit_failure(
+                    &mut reporter,
+                    "mcp.serve",
+                    "mcp serve",
+                    started_at,
+                    &EmptyData,
+                    ErrorCode::Internal,
+                    message,
+                    None,
+                )?;
+                Ok(ErrorCode::Internal.exit_code())
+            } else {
+                Err(coded_error(ErrorCode::Internal, message))
+            }
+        }
     }
 }
 
