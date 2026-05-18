@@ -6,6 +6,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+pub mod ledger;
+#[cfg(test)]
+mod tests_support;
+
 #[derive(Debug, Clone)]
 pub struct PersistedRun {
     pub id: String,
@@ -249,73 +253,9 @@ pub fn retrospective_template(run_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests_support::{env_lock, EnvGuard, TempDir};
     use serde_json::Value;
-    use std::ffi::OsString;
     use std::fs;
-    use std::path::Path;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let suffix = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock should be after unix epoch")
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "rebotica-runlog-{name}-{}-{suffix}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).expect("temp dir should be created");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &Path) -> Self {
-            let previous = std::env::var_os(key);
-            std::env::set_var(key, value);
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.previous {
-                std::env::set_var(self.key, value);
-            } else {
-                std::env::remove_var(self.key);
-            }
-        }
-    }
-
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock should not be poisoned")
-    }
 
     #[test]
     fn root_uses_private_state_directory_under_home() {

@@ -2055,6 +2055,13 @@ async fn dispatch_run(
         &assembled.prompt,
     )?;
     persist_selected_skills(&persisted.directory, &assembled.selected_skills)?;
+    emit_run_started_event(
+        &persisted.id,
+        &plugin.manifest.kind,
+        &model,
+        &settings.name,
+        plugin.manifest.schema_version,
+    );
 
     let raw = match provider
         .chat(
@@ -2163,6 +2170,21 @@ async fn dispatch_run(
             .build();
         rebotica_runlog::write_envelope(&persisted, &envelope)?;
     }
+
+    emit_run_completed_event(
+        &persisted.id,
+        &plugin.manifest.kind,
+        &model,
+        true,
+        None,
+        started_at,
+        Some(raw.len() as u64),
+        extracted
+            .value
+            .get("confidence")
+            .and_then(|value| value.as_u64())
+            .map(|value| value.min(u8::MAX as u64) as u8),
+    );
 
     Ok(0)
 }
@@ -2637,6 +2659,78 @@ fn run_guard_adapter(
     Ok(())
 }
 
+/// Append a `run_started` event to the apprentice ledger.
+///
+/// Best-effort: a ledger write failure logs to stderr but does not abort
+/// the run, since the persisted run directory and the wire envelope are
+/// the authoritative records.
+fn emit_run_started_event(
+    run_id: &str,
+    kind: &str,
+    model: &str,
+    provider: &str,
+    contract_version: u64,
+) {
+    let Some(envelope_shape) = rebotica_runlog::ledger::EnvelopeShape::from_run_kind(kind) else {
+        return;
+    };
+    let event =
+        rebotica_runlog::ledger::Event::RunStarted(rebotica_runlog::ledger::RunStartedPayload {
+            kind: kind.to_string(),
+            envelope_shape,
+            model: model.to_string(),
+            provider: provider.to_string(),
+            contract_version,
+        });
+    if let Err(error) = rebotica_runlog::ledger::append_event(Some(run_id), &event) {
+        eprintln!("warning: failed to record run_started in ledger: {error:#}");
+    }
+}
+
+/// Append a `run_completed` event. `model` may be `"unknown"` when called
+/// from a failure path that lost the resolved model; the writer will look
+/// it up from the matching `run_started` event before persisting.
+#[allow(clippy::too_many_arguments)]
+fn emit_run_completed_event(
+    run_id: &str,
+    kind: &str,
+    model: &str,
+    ok: bool,
+    error_code: Option<ErrorCode>,
+    started_at: DateTime<Utc>,
+    output_bytes: Option<u64>,
+    confidence: Option<u8>,
+) {
+    let Some(envelope_shape) = rebotica_runlog::ledger::EnvelopeShape::from_run_kind(kind) else {
+        return;
+    };
+    let resolved_model = if model == "unknown" {
+        rebotica_runlog::ledger::model_for_run(run_id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "unknown".to_string())
+    } else {
+        model.to_string()
+    };
+    let duration_ms = (Utc::now() - started_at).num_milliseconds().max(0) as u64;
+    let event = rebotica_runlog::ledger::Event::RunCompleted(
+        rebotica_runlog::ledger::RunCompletedPayload {
+            kind: kind.to_string(),
+            envelope_shape,
+            model: resolved_model,
+            ok,
+            error_code: error_code.map(|c| c.as_str().to_string()),
+            duration_ms,
+            output_bytes,
+            hallucination_rate: None,
+            confidence,
+        },
+    );
+    if let Err(error) = rebotica_runlog::ledger::append_event(Some(run_id), &event) {
+        eprintln!("warning: failed to record run_completed in ledger: {error:#}");
+    }
+}
+
 fn worker_mode_for_run(mode: &str) -> WorkerMode {
     match mode {
         "review" => WorkerMode::Review,
@@ -2659,6 +2753,18 @@ fn finish_run_failure(
     details: Option<serde_json::Value>,
 ) -> Result<i32> {
     let message = message.into();
+    if let Some(run) = persisted {
+        emit_run_completed_event(
+            &run.id,
+            kind,
+            "unknown",
+            false,
+            Some(code),
+            started_at,
+            None,
+            None,
+        );
+    }
     if reporter.is_json() {
         let mut builder = Envelope::builder(kind)
             .command(command)
@@ -3256,19 +3362,35 @@ fn score_data(args: ScoreArgs) -> Result<ScoreData> {
     let rating = args.rating;
     let labels = args.labels;
     let notes = args.notes;
+    let labels_for_card = labels.clone();
+    let notes_for_card = notes.clone();
     rebotica_runlog::update_scorecard(&args.run_id, |card| {
         card.disposition = disposition;
         if let Some(value) = rating {
             card.rating = Some(value);
         }
-        if !labels.is_empty() {
-            card.labels = labels;
+        if !labels_for_card.is_empty() {
+            card.labels = labels_for_card;
         }
-        if let Some(value) = notes {
+        if let Some(value) = notes_for_card {
             card.notes = Some(value);
         }
     })
     .with_context(|| format!("failed to update scorecard for run {}", args.run_id))?;
+
+    let ledger_event = rebotica_runlog::ledger::Event::PrimeDisposition(
+        rebotica_runlog::ledger::PrimeDispositionPayload {
+            disposition,
+            rating,
+            labels,
+            notes,
+        },
+    );
+    if let Err(error) =
+        rebotica_runlog::ledger::append_event(Some(args.run_id.as_str()), &ledger_event)
+    {
+        eprintln!("warning: failed to record prime_disposition in ledger: {error:#}");
+    }
 
     Ok(ScoreData {
         event,
