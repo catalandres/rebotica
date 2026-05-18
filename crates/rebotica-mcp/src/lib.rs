@@ -39,6 +39,15 @@ pub struct ReviewDiffRequest {
     /// for `review` if omitted.
     #[serde(default)]
     pub model: Option<String>,
+    /// Maximum number of changed lines the apprentice will accept. Overrides
+    /// the project default (built-in default: 1000). Pass when the user has
+    /// explicitly asked for a larger review.
+    #[serde(default)]
+    pub max_lines: Option<usize>,
+    /// Maximum number of changed files the apprentice will accept. Overrides
+    /// the project default (built-in default: 25).
+    #[serde(default)]
+    pub max_files: Option<usize>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -111,7 +120,7 @@ impl ApprenticeServer {
 #[tool_router]
 impl ApprenticeServer {
     #[tool(
-        description = "Review a git diff for correctness bugs, behavioral regressions, missing tests, and scope violations. Call this BEFORE writing your own review of the user's changes — the local apprentice produces structured findings with file and line citations and a confidence score. Use 'staged' for indexed changes, 'working-tree' for unstaged, or 'range:BASE..HEAD' for an explicit range."
+        description = "Review a git diff for correctness bugs, behavioral regressions, missing tests, and scope violations. Call this BEFORE writing your own review of the user's changes — the local apprentice produces structured findings with file and line citations and a confidence score. Use 'staged' for indexed changes, 'working-tree' for unstaged, or 'range:BASE..HEAD' for an explicit range. For diffs larger than the project default (1000 lines / 25 files), pass `max_lines` and/or `max_files` when the user has explicitly asked for a larger review."
     )]
     async fn review_diff(
         &self,
@@ -136,6 +145,12 @@ impl ApprenticeServer {
         if let Some(model) = req.model {
             adapter_args.push("--model".to_string());
             adapter_args.push(model);
+        }
+        if let Some(max_lines) = req.max_lines {
+            adapter_args.push(format!("--max-lines={max_lines}"));
+        }
+        if let Some(max_files) = req.max_files {
+            adapter_args.push(format!("--max-files={max_files}"));
         }
         self.run_mode("review", adapter_args, "mcp.review_diff")
             .await

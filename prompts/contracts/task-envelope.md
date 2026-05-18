@@ -11,8 +11,8 @@ allowed_files: []
 forbidden_files: []
 sensitive_files: []
 commands_to_run: []
-max_changed_lines: 300
-max_files_changed: 5
+max_changed_lines: 1000
+max_files_changed: 25
 output_format: analysis | json | unified_diff
 acceptance_criteria: []
 risk_level: low | medium | high

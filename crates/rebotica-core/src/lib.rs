@@ -293,11 +293,11 @@ pub fn parse_forbidden_files_from_envelope(text: &str) -> Result<Vec<String>> {
 }
 
 fn default_max_changed_lines() -> usize {
-    300
+    1000
 }
 
 fn default_max_files_changed() -> usize {
-    5
+    25
 }
 
 fn default_provider() -> String {
@@ -396,8 +396,8 @@ mod tests {
         assert_eq!(loaded.path, None);
         assert_eq!(loaded.raw_or_placeholder(), "(none)");
         assert_eq!(loaded.config.providers.default, "lmstudio");
-        assert_eq!(loaded.config.default_limits.max_changed_lines, 300);
-        assert_eq!(loaded.config.default_limits.max_files_changed, 5);
+        assert_eq!(loaded.config.default_limits.max_changed_lines, 1000);
+        assert_eq!(loaded.config.default_limits.max_files_changed, 25);
     }
 
     #[test]
