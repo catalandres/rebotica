@@ -45,6 +45,14 @@ pub struct Commands {
     pub format_check: String,
 }
 
+/// Diff size limits enforced by the diff adapter before a run reaches
+/// the apprentice. Built-in defaults are 1000 lines / 25 files, picked
+/// to fit a typical real-world PR against a mid-tier local model
+/// (qwen-coder-32b class). The ratio favors many small files over few
+/// large ones (~40 lines/file average) on the assumption that scoped
+/// edits beat big rewrites for apprentice review quality. Override per
+/// project via `.rebotica.yml`; per-model defaults are tracked in
+/// issue #61 for v0.4+.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Limits {
     #[serde(default = "default_max_changed_lines")]

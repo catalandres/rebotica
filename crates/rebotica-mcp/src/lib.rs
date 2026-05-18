@@ -120,7 +120,7 @@ impl ApprenticeServer {
 #[tool_router]
 impl ApprenticeServer {
     #[tool(
-        description = "Review a git diff for correctness bugs, behavioral regressions, missing tests, and scope violations. Call this BEFORE writing your own review of the user's changes — the local apprentice produces structured findings with file and line citations and a confidence score. Use 'staged' for indexed changes, 'working-tree' for unstaged, or 'range:BASE..HEAD' for an explicit range. For diffs larger than the project default (1000 lines / 25 files), pass `max_lines` and/or `max_files` when the user has explicitly asked for a larger review."
+        description = "Review a git diff for correctness bugs, behavioral regressions, missing tests, and scope violations. Call this BEFORE writing your own review of the user's changes — the local apprentice produces structured findings with file and line citations and a confidence score. Use 'staged' for indexed changes, 'working-tree' for unstaged, or 'range:BASE..HEAD' for an explicit range. For diffs larger than the built-in defaults (1000 lines / 25 files, overridable via `.rebotica.yml`), pass `max_lines` and/or `max_files` when the user has explicitly asked for a larger review."
     )]
     async fn review_diff(
         &self,
