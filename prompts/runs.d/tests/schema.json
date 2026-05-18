@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rebotica/run.tests.schema.json",
+  "allOf": [
+    { "$ref": "https://rebotica/runs-common.schema.json" },
+    {
+      "type": "object",
+      "required": ["proposed_tests"],
+      "properties": {
+        "proposed_tests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "scenario"],
+            "properties": {
+              "file": { "type": "string" },
+              "name": { "type": "string" },
+              "scenario": { "type": "string" },
+              "kind": { "enum": ["unit", "integration", "e2e"] }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

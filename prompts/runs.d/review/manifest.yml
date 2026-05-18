@@ -1,0 +1,12 @@
+kind: run.review
+display_name: Code Review
+description: Review a diff for correctness, safety, and clarity issues.
+schema_version: 1
+inputs:
+  - diff
+  - skills
+  - guard
+exit_codes:
+  - output_invalid
+  - guard_rejected
+  - over_limit

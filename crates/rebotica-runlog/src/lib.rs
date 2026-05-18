@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use serde::Serialize;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -37,22 +38,36 @@ pub fn persist(
     prompt: &str,
     response: &str,
 ) -> Result<PersistedRun> {
-    let id = make_id();
+    let run = create(mode, model, envelope, prompt)?;
+    write_model_response(&run, response)?;
+    write_parsed_output(
+        &run,
+        &json!({
+            "mode": mode,
+            "model": model,
+            "response_unparsed": true
+        }),
+    )?;
+    Ok(run)
+}
+
+pub fn create(mode: &str, model: &str, envelope: &str, prompt: &str) -> Result<PersistedRun> {
+    create_with_id(make_id(), mode, model, envelope, prompt)
+}
+
+pub fn create_with_id(
+    id: String,
+    mode: &str,
+    model: &str,
+    envelope: &str,
+    prompt: &str,
+) -> Result<PersistedRun> {
     let directory = runs_root().join(&id);
     fs::create_dir_all(&directory)
         .with_context(|| format!("failed to create {}", directory.display()))?;
 
     fs::write(directory.join("task-envelope.yml"), envelope)?;
     fs::write(directory.join("prompt.md"), prompt)?;
-    fs::write(directory.join("model-response.md"), response)?;
-    fs::write(
-        directory.join("parsed-output.json"),
-        serde_json::to_string_pretty(&json!({
-            "mode": mode,
-            "model": model,
-            "response_unparsed": true
-        }))?,
-    )?;
 
     let project = std::env::current_dir()
         .ok()
@@ -75,6 +90,35 @@ pub fn persist(
     }
 
     Ok(PersistedRun { id, directory })
+}
+
+pub fn write_model_response(run: &PersistedRun, response: &str) -> Result<()> {
+    fs::write(run.directory.join("model-response.md"), response)?;
+    Ok(())
+}
+
+pub fn write_parsed_output<T: Serialize>(run: &PersistedRun, data: &T) -> Result<()> {
+    write_json(run, "parsed-output.json", data)
+}
+
+pub fn write_parse_failure<T: Serialize>(run: &PersistedRun, details: &T) -> Result<()> {
+    write_json(run, "parse-failure.json", details)
+}
+
+pub fn write_provider_failure<T: Serialize>(run: &PersistedRun, details: &T) -> Result<()> {
+    write_json(run, "provider-failure.json", details)
+}
+
+pub fn write_envelope<T: Serialize>(run: &PersistedRun, envelope: &T) -> Result<()> {
+    write_json(run, "envelope.json", envelope)
+}
+
+fn write_json<T: Serialize>(run: &PersistedRun, name: &str, value: &T) -> Result<()> {
+    fs::write(
+        run.directory.join(name),
+        serde_json::to_string_pretty(value)?,
+    )?;
+    Ok(())
 }
 
 pub fn retrospective_template(run_id: &str) -> String {

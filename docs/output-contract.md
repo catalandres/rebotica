@@ -6,7 +6,7 @@ This document specifies the wire format `rbtc` emits in machine-readable mode. P
 
 The v1 envelope is what `rbtc` writes to stdout in JSON or quiet mode. Every migrated command emits one envelope per invocation, success or failure. The shape is stable within `v1`; additive fields do not bump the version, semantic changes do.
 
-The commands currently on the v1 envelope are listed in the [`kind` taxonomy](#kind-taxonomy) below. `run review`, `run explain`, `run tests`, and `run patch` are not yet on the envelope and their output should not be parsed from another tool; see [Reserved kinds](#reserved-kinds).
+The commands currently on the v1 envelope are listed in the [`kind` taxonomy](#kind-taxonomy) below.
 
 ## Channels
 
@@ -122,10 +122,39 @@ These kinds are emitted today:
 | `comment-card.consent` | `rbtc comment-card consent` | The consent state and target repo. |
 | `comment-card.submit` | `rbtc comment-card submit` | Submission result, including the GitHub issue url. |
 | `retro` | `rbtc retro` | The created retrospective path and source run id. |
+| `run.review` | `rbtc run review` | Schema-validated review findings for a selected diff. |
+| `run.explain` | `rbtc run explain` | Schema-validated analysis for selected files. |
+| `run.tests` | `rbtc run tests` | Schema-validated proposed tests for selected files. |
+| `run.patch` | `rbtc run patch` | Schema-validated patch proposal and touched files. |
 
 For the canonical `data` field shape of each kind, the source struct in `crates/rebotica-cli/src/main.rs` is authoritative. A consumer that wants to be forward-compatible should read only the fields it needs and ignore unknown ones.
 
 The literal kind `"error"` is also possible: it is used when an envelope must be emitted before a subcommand can be resolved (clap parse failures, missing-subcommand, top-level cancellation). When you see `kind: "error"`, branch on `error.code` only; `command` will be `"rbtc"` or the best-effort subcommand path, and `data` will be `{}`.
+
+## Persisted Run Artifacts
+
+Model-backed `run.*` invocations allocate a `run_id` and create `~/.rebotica/runs/{run_id}/` before the provider chat request. The stdout envelope is the wire contract; the run directory is the audit trail.
+
+Success writes:
+
+- `model-response.md`: raw provider text, verbatim.
+- `parsed-output.json`: the validated envelope `data`.
+- `envelope.json`: the full emitted v1 envelope.
+
+When the provider returns text but JSON extraction or schema validation fails, Rebotica writes:
+
+- `model-response.md`: raw provider text, verbatim.
+- `parse-failure.json`: the structured `error.details` object.
+- `envelope.json`: the full failure envelope.
+
+When the provider call fails before returning a response, Rebotica writes:
+
+- `provider-failure.json`: typed provider diagnostic details.
+- `envelope.json`: the full failure envelope.
+
+`model-response.md` is present if and only if the provider returned a response body. Its absence means the model was never reached or returned no response body to persist.
+
+Failure envelopes from after run allocation, including `output_invalid` and provider failures, carry the same non-null `run_id` so consumers can locate the persisted artifacts. Failures before run allocation, such as unknown modes or guard rejection, keep `run_id: null`.
 
 ## Reserved kinds
 
@@ -133,10 +162,6 @@ The following are reserved by the v1 spec but not yet emitted. Do not parse anyt
 
 | `kind` | Command | Status |
 | --- | --- | --- |
-| `run.review` | `rbtc run review` | Awaiting epic [#5](https://github.com/catalandres/rebotica/issues/5). |
-| `run.explain` | `rbtc run explain` | Awaiting epic #5. |
-| `run.tests` | `rbtc run tests` | Awaiting epic #5. |
-| `run.patch` | `rbtc run patch` | Awaiting epic #5. |
 | `runs.list` | `rbtc runs list` | Awaiting issue #18. Command does not yet exist. |
 | `runs.show` | `rbtc runs show` | Awaiting issue #18. Command does not yet exist. |
 | `capabilities` | `rbtc capabilities` | Awaiting issue #17. Command does not yet exist. |

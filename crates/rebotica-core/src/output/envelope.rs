@@ -9,7 +9,7 @@ const ENVELOPE_VERSION: &str = "v1";
 #[derive(Debug, Clone, Serialize)]
 pub struct Envelope<T: Serialize> {
     pub rebotica: &'static str,
-    pub kind: &'static str,
+    pub kind: String,
     pub ok: bool,
     pub command: String,
     pub data: T,
@@ -73,6 +73,21 @@ impl ErrorCode {
             Self::Cancelled => 130,
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "internal",
+            Self::Usage => "usage",
+            Self::Config => "config",
+            Self::ProviderUnavailable => "provider_unavailable",
+            Self::ProviderServerError => "provider_server_error",
+            Self::ProviderClientError => "provider_client_error",
+            Self::GuardRejected => "guard_rejected",
+            Self::OutputInvalid => "output_invalid",
+            Self::OverLimit => "over_limit",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +132,7 @@ impl Serialize for EmptyData {
 
 #[derive(Debug, Clone)]
 pub struct EnvelopeBuilder<T> {
-    kind: &'static str,
+    kind: String,
     command: String,
     data: T,
     error: Option<EnvelopeError>,
@@ -126,10 +141,11 @@ pub struct EnvelopeBuilder<T> {
 }
 
 impl Envelope<EmptyData> {
-    pub fn builder(kind: &'static str) -> EnvelopeBuilder<EmptyData> {
+    pub fn builder(kind: impl Into<String>) -> EnvelopeBuilder<EmptyData> {
+        let kind = kind.into();
         EnvelopeBuilder {
+            command: kind.clone(),
             kind,
-            command: kind.to_string(),
             data: EmptyData,
             error: None,
             run_id: None,

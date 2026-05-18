@@ -5,6 +5,9 @@ use rebotica_core::output::{
     env_truthy, CodedCommandError, EmptyData, Envelope, EnvelopeError, ErrorCode, Reporter,
     ReporterMode,
 };
+use rebotica_core::run::{
+    extract_json_payload, Registry, RegistryRoots, RunError, SchemaValidator,
+};
 use rebotica_core::{
     model_for_mode, parse_allowed_files_from_envelope, parse_forbidden_files_from_envelope,
     resolve_model_alias, LoadedConfig, ProjectConfig, TaskEnvelope, WorkerMode,
@@ -15,6 +18,7 @@ use rebotica_provider::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -230,21 +234,12 @@ struct SkillsShowArgs {
 }
 
 #[derive(Debug, Parser)]
+#[command(disable_help_flag = true)]
 struct RunArgs {
-    #[command(subcommand)]
-    mode: RunMode,
-}
-
-#[derive(Debug, Subcommand)]
-enum RunMode {
-    #[command(about = "Ask a local model to review a selected git diff.")]
-    Review(ReviewArgs),
-    #[command(about = "Ask a local model to explain selected files.")]
-    Explain(FileWorkerArgs),
-    #[command(about = "Ask a local model to propose focused tests for selected files.")]
-    Tests(FileWorkerArgs),
-    #[command(about = "Ask a local model for a dry-run unified diff from a task envelope.")]
-    Patch(PatchArgs),
+    #[arg(value_name = "MODE", help = "Run mode resolved from runs.d plugins.")]
+    mode: String,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    adapter_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -253,132 +248,6 @@ enum InstallTarget {
     Codex,
     Github,
     All,
-}
-
-#[derive(Debug, Parser)]
-struct ReviewArgs {
-    #[command(flatten)]
-    provider: ProviderArgs,
-    #[arg(
-        long = "model",
-        value_name = "MODEL",
-        help = "Model alias or raw provider model id for review. Repeat to run multiple models side by side."
-    )]
-    models: Vec<String>,
-    #[arg(
-        long,
-        value_name = "REF",
-        conflicts_with_all = ["range", "cached"],
-        help = "Review changes from merge-base(REF, HEAD) to HEAD."
-    )]
-    base: Option<String>,
-    #[arg(
-        long,
-        value_name = "REV_RANGE",
-        conflicts_with_all = ["base", "cached"],
-        help = "Review an explicit git diff range, for example main..HEAD or main...HEAD."
-    )]
-    range: Option<String>,
-    #[arg(
-        long,
-        conflicts_with_all = ["base", "range"],
-        help = "Review staged changes instead of unstaged working tree changes."
-    )]
-    cached: bool,
-    #[arg(
-        long,
-        value_name = "COUNT",
-        help = "Override max_files_changed in the review task envelope."
-    )]
-    max_files: Option<usize>,
-    #[arg(
-        long,
-        value_name = "COUNT",
-        help = "Override max_changed_lines in the review task envelope."
-    )]
-    max_lines: Option<usize>,
-    #[arg(
-        long = "skill",
-        value_name = "SKILL",
-        help = "Attach a canonical or project-local skill as delegated run context."
-    )]
-    skills: Vec<String>,
-    #[arg(long, help = "Optional review goal to put in the task envelope.")]
-    goal: Option<String>,
-    #[arg(
-        long,
-        default_value = "medium",
-        help = "Risk level to record in the task envelope."
-    )]
-    risk: String,
-    #[arg(
-        long,
-        default_value_t = 0.0,
-        help = "Sampling temperature for the chat request."
-    )]
-    temperature: f64,
-}
-
-#[derive(Debug, Parser)]
-struct FileWorkerArgs {
-    #[command(flatten)]
-    provider: ProviderArgs,
-    #[arg(long, help = "Model alias or raw provider model id for this run.")]
-    model: Option<String>,
-    #[arg(long, help = "Optional goal to put in the task envelope.")]
-    goal: Option<String>,
-    #[arg(
-        long = "skill",
-        value_name = "SKILL",
-        help = "Attach a canonical or project-local skill as delegated run context."
-    )]
-    skills: Vec<String>,
-    #[arg(
-        long,
-        default_value_t = 0.0,
-        help = "Sampling temperature for the chat request."
-    )]
-    temperature: f64,
-    #[arg(
-        value_name = "FILE",
-        help = "Project file to include in the model context."
-    )]
-    files: Vec<String>,
-}
-
-#[derive(Debug, Parser)]
-struct PatchArgs {
-    #[command(flatten)]
-    provider: ProviderArgs,
-    #[arg(
-        long,
-        help = "Model alias or raw provider model id for patch drafting."
-    )]
-    model: Option<String>,
-    #[arg(
-        long,
-        default_value_t = 0.0,
-        help = "Sampling temperature for the chat request."
-    )]
-    temperature: f64,
-    #[arg(
-        long = "skill",
-        value_name = "SKILL",
-        help = "Attach a canonical or project-local skill as delegated run context."
-    )]
-    skills: Vec<String>,
-    #[arg(
-        long,
-        help = "Print the proposed diff and run metadata without applying anything."
-    )]
-    dry_run: bool,
-    #[arg(long, help = "Request direct application; currently rejected in v0.1.")]
-    apply: bool,
-    #[arg(
-        value_name = "TASK_ENVELOPE",
-        help = "Path to a task-envelope YAML file."
-    )]
-    envelope: String,
 }
 
 #[derive(Debug, Parser)]
@@ -711,10 +580,7 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
                 command,
             )
         }
-        Command::Run(args) => {
-            run_mode(args).await?;
-            Ok(0)
-        }
+        Command::Run(args) => run_plugin(args, reporter_mode, started_at).await,
         Command::GuardDiff(args) => handle_migrated_result(
             guard_diff(args, reporter_mode, started_at),
             reporter_mode,
@@ -805,12 +671,7 @@ fn command_path(cli: &Cli) -> String {
             SkillsCommand::List(_) => "skills list",
             SkillsCommand::Show(_) => "skills show",
         },
-        Some(Command::Run(args)) => match &args.mode {
-            RunMode::Review(_) => "run review",
-            RunMode::Explain(_) => "run explain",
-            RunMode::Tests(_) => "run tests",
-            RunMode::Patch(_) => "run patch",
-        },
+        Some(Command::Run(args)) => return format!("run {}", args.mode),
         Some(Command::GuardDiff(_)) => "guard-diff",
         Some(Command::Score(_)) => "score",
         Some(Command::Scorecards) => "scorecards",
@@ -945,12 +806,42 @@ fn handle_migrated_result(
     }
 }
 
-async fn run_mode(args: RunArgs) -> Result<()> {
-    match args.mode {
-        RunMode::Review(args) => review(args).await,
-        RunMode::Explain(args) => explain(args).await,
-        RunMode::Tests(args) => propose_tests(args).await,
-        RunMode::Patch(args) => propose_patch(args).await,
+async fn run_plugin(
+    args: RunArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let cwd = std::env::current_dir()?;
+    let registry = load_run_registry(&cwd)?;
+
+    if args
+        .adapter_args
+        .iter()
+        .any(|arg| arg == "--help" || arg == "-h")
+    {
+        let mut help_reporter = Reporter::from_mode(ReporterMode::Human);
+        render_run_help(&mut help_reporter, &registry, &args.mode)?;
+        return Ok(0);
+    }
+
+    match dispatch_run(&registry, &cwd, args, reporter_mode, started_at).await {
+        Ok(code) => Ok(code),
+        Err(error) if reporter_mode.is_json() => {
+            let code = error_code_for(&error);
+            let envelope = Envelope::builder("run")
+                .command("run")
+                .started_at(started_at)
+                .error(EnvelopeError {
+                    code,
+                    message: format!("{error:#}"),
+                    details: None,
+                })
+                .build();
+            reporter.emit(&envelope)?;
+            Ok(code.exit_code())
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -1043,6 +934,43 @@ async fn doctor(
             error.to_string(),
         ),
     });
+
+    match load_run_registry(&cwd) {
+        Ok(registry) => {
+            let broken = registry.broken_layers();
+            if broken.is_empty() {
+                checks.push(Check::ok(
+                    "run.plugins",
+                    "Run plugin registry resolves",
+                    format!("{} modes available", registry.available_modes().len()),
+                ));
+            } else {
+                let detail = broken
+                    .iter()
+                    .map(|layer| {
+                        format!(
+                            "{}:{}:{} ({})",
+                            layer.mode,
+                            layer.layer.label(),
+                            layer.path,
+                            layer.reason
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                checks.push(Check::warn(
+                    "run.plugins",
+                    "Run plugin registry has broken layers",
+                    detail,
+                ));
+            }
+        }
+        Err(error) => checks.push(Check::fail(
+            "run.plugins",
+            "Run plugin registry resolves",
+            error.to_string(),
+        )),
+    }
 
     checks.push(installed_check(
         "install.claude",
@@ -1847,49 +1775,626 @@ fn skills(args: SkillsArgs, reporter_mode: ReporterMode, started_at: DateTime<Ut
     }
 }
 
-async fn review(args: ReviewArgs) -> Result<()> {
-    rebotica_git::assert_repository()?;
-    let cwd = std::env::current_dir()?;
-    let loaded = LoadedConfig::read_from(&cwd)?;
-    let diff_source = review_diff_source(&args)?;
+#[derive(Debug)]
+struct RunFailure {
+    code: ErrorCode,
+    message: String,
+    details: Option<serde_json::Value>,
+}
+
+impl fmt::Display for RunFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for RunFailure {}
+
+fn run_failure(
+    code: ErrorCode,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> RunFailure {
+    RunFailure {
+        code,
+        message: message.into(),
+        details,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RunEngineOptions {
+    provider: ProviderArgs,
+    model: Option<String>,
+    temperature: f64,
+}
+
+impl Default for RunEngineOptions {
+    fn default() -> Self {
+        Self {
+            provider: ProviderArgs::default(),
+            model: None,
+            temperature: 0.0,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AssembledRun {
+    envelope_text: String,
+    prompt: String,
+    selected_skills: Vec<ResolvedSkill>,
+    options: RunEngineOptions,
+}
+
+#[derive(Debug)]
+struct AdapterArgCursor {
+    tokens: Vec<String>,
+    consumed: Vec<bool>,
+}
+
+impl AdapterArgCursor {
+    fn new(tokens: Vec<String>) -> Self {
+        let consumed = vec![false; tokens.len()];
+        Self { tokens, consumed }
+    }
+
+    fn take_flag(&mut self, flag: &str) -> bool {
+        for index in 0..self.tokens.len() {
+            if !self.consumed[index] && self.tokens[index] == flag {
+                self.consumed[index] = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    fn take_option(&mut self, flag: &str) -> Result<Option<String>, RunFailure> {
+        for index in 0..self.tokens.len() {
+            if self.consumed[index] {
+                continue;
+            }
+            let token = &self.tokens[index];
+            if let Some(value) = token.strip_prefix(&format!("{flag}=")) {
+                self.consumed[index] = true;
+                return Ok(Some(value.to_string()));
+            }
+            if token == flag {
+                self.consumed[index] = true;
+                let value_index = index + 1;
+                if value_index >= self.tokens.len() || self.consumed[value_index] {
+                    return Err(run_failure(
+                        ErrorCode::Usage,
+                        format!("{flag} requires a value"),
+                        None,
+                    ));
+                }
+                self.consumed[value_index] = true;
+                return Ok(Some(self.tokens[value_index].clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    fn take_repeated_options(&mut self, flag: &str) -> Result<Vec<String>, RunFailure> {
+        let mut values = Vec::new();
+        while let Some(value) = self.take_option(flag)? {
+            values.push(value);
+        }
+        Ok(values)
+    }
+
+    fn take_positionals(&mut self) -> Vec<String> {
+        let mut values = Vec::new();
+        for index in 0..self.tokens.len() {
+            if !self.consumed[index] && !self.tokens[index].starts_with('-') {
+                self.consumed[index] = true;
+                values.push(self.tokens[index].clone());
+            }
+        }
+        values
+    }
+
+    fn take_first_positional(&mut self) -> Option<String> {
+        for index in 0..self.tokens.len() {
+            if !self.consumed[index] && !self.tokens[index].starts_with('-') {
+                self.consumed[index] = true;
+                return Some(self.tokens[index].clone());
+            }
+        }
+        None
+    }
+
+    fn first_unconsumed(&self) -> Option<String> {
+        self.tokens
+            .iter()
+            .zip(&self.consumed)
+            .find_map(|(token, consumed)| (!*consumed).then(|| token.clone()))
+    }
+}
+
+async fn dispatch_run(
+    registry: &Registry,
+    cwd: &Path,
+    args: RunArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let mode = args.mode;
+    let command = format!("run {mode}");
+    let plugin = match registry.resolve(&mode) {
+        Ok(plugin) => plugin,
+        Err(error) => {
+            if let RunError::AllLayersBroken { broken, .. } = &error {
+                emit_broken_layer_reasons(broken, reporter_mode, false);
+            }
+            let details = match &error {
+                RunError::AllLayersBroken { broken, .. } => Some(serde_json::json!({
+                    "broken_layers": broken
+                })),
+                RunError::UnknownMode { available, .. } => Some(serde_json::json!({
+                    "available_modes": available
+                })),
+                RunError::InvalidPlugin { .. } => None,
+            };
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                "run",
+                &command,
+                None,
+                ErrorCode::Usage,
+                error.to_string(),
+                details,
+            );
+        }
+    };
+
+    emit_plugin_warnings(registry, &mode, reporter_mode);
+
+    let assembled = match assemble_run(cwd, plugin, args.adapter_args) {
+        Ok(assembled) => assembled,
+        Err(error) => {
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                &plugin.manifest.kind,
+                &command,
+                None,
+                error.code,
+                error.message,
+                error.details,
+            )
+        }
+    };
+
+    let loaded = with_error_code(LoadedConfig::read_from(cwd), ErrorCode::Config)?;
+    let worker_mode = worker_mode_for_run(&plugin.mode);
+    let model = match resolve_model(&loaded, worker_mode, assembled.options.model.clone()) {
+        Ok(model) => model,
+        Err(error) => {
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                &plugin.manifest.kind,
+                &command,
+                None,
+                ErrorCode::Config,
+                error.to_string(),
+                None,
+            )
+        }
+    };
+    let settings = match provider_settings(&loaded, assembled.options.provider.clone()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                &plugin.manifest.kind,
+                &command,
+                None,
+                ErrorCode::Config,
+                error.to_string(),
+                None,
+            )
+        }
+    };
+    let provider = match OpenAICompatibleProvider::new(&settings) {
+        Ok(provider) => provider,
+        Err(error) => {
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                &plugin.manifest.kind,
+                &command,
+                None,
+                ErrorCode::Config,
+                error.to_string(),
+                None,
+            )
+        }
+    };
+
+    let persisted = rebotica_runlog::create(
+        &plugin.mode,
+        &model,
+        &assembled.envelope_text,
+        &assembled.prompt,
+    )?;
+    persist_selected_skills(&persisted.directory, &assembled.selected_skills)?;
+
+    let raw = match provider
+        .chat(
+            &model,
+            vec![
+                ChatMessage::new(
+                    "system",
+                    "You are a local model operating under a scoped task contract. Follow the supplied contract exactly.",
+                ),
+                ChatMessage::new("user", assembled.prompt.clone()),
+            ],
+            assembled.options.temperature,
+        )
+        .await
+    {
+        Ok(raw) => raw,
+        Err(error) => {
+            let code = error_code_for_provider_failure(&error);
+            let details = provider_failure_details(&error);
+            rebotica_runlog::write_provider_failure(&persisted, &details)?;
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                &plugin.manifest.kind,
+                &command,
+                Some(&persisted),
+                code,
+                error.to_string(),
+                Some(details),
+            );
+        }
+    };
+
+    rebotica_runlog::write_model_response(&persisted, &raw)?;
+
+    let extracted = match extract_json_payload(&raw) {
+        Ok(extracted) => extracted,
+        Err(error) => {
+            let details = serde_json::json!({
+                "mode": plugin.mode,
+                "parse_error": error.parse_error,
+                "extraction": error.extraction.as_str()
+            });
+            rebotica_runlog::write_parse_failure(&persisted, &details)?;
+            return finish_run_failure(
+                &mut reporter,
+                reporter_mode,
+                started_at,
+                &plugin.manifest.kind,
+                &command,
+                Some(&persisted),
+                ErrorCode::OutputInvalid,
+                "model output did not contain schema-valid JSON",
+                Some(details),
+            );
+        }
+    };
+
+    if extracted.fallback_used && reporter_mode != ReporterMode::Quiet {
+        eprintln!(
+            "note: {} response had no parseable fenced ```json block; used the last balanced {{...}}. consider tightening the prompt.",
+            plugin.manifest.kind
+        );
+    }
+
+    let validator = SchemaValidator::new(plugin.schema.clone(), plugin.common_schema.clone())?;
+    let validation_errors = validator.validate(&extracted.value)?;
+    if !validation_errors.is_empty() {
+        let details = serde_json::json!({
+            "mode": plugin.mode,
+            "extraction": extracted.extraction.as_str(),
+            "validation_errors": validation_errors
+        });
+        rebotica_runlog::write_parse_failure(&persisted, &details)?;
+        return finish_run_failure(
+            &mut reporter,
+            reporter_mode,
+            started_at,
+            &plugin.manifest.kind,
+            &command,
+            Some(&persisted),
+            ErrorCode::OutputInvalid,
+            "model output failed schema validation",
+            Some(details),
+        );
+    }
+
+    rebotica_runlog::write_parsed_output(&persisted, &extracted.value)?;
+    if reporter.is_json() {
+        let envelope = Envelope::builder(&plugin.manifest.kind)
+            .command(&command)
+            .started_at(started_at)
+            .run_id(persisted.id.as_str())
+            .data(&extracted.value)
+            .build();
+        rebotica_runlog::write_envelope(&persisted, &envelope)?;
+        reporter.emit(&envelope)?;
+    } else {
+        reporter.human(&serde_json::to_string_pretty(&extracted.value)?)?;
+        let envelope = Envelope::builder(&plugin.manifest.kind)
+            .command(&command)
+            .started_at(started_at)
+            .run_id(persisted.id.as_str())
+            .data(&extracted.value)
+            .build();
+        rebotica_runlog::write_envelope(&persisted, &envelope)?;
+    }
+
+    Ok(0)
+}
+
+fn assemble_run(
+    cwd: &Path,
+    plugin: &rebotica_core::run::ResolvedPlugin,
+    adapter_args: Vec<String>,
+) -> std::result::Result<AssembledRun, RunFailure> {
+    let loaded = LoadedConfig::read_from(cwd).map_err(|error| {
+        run_failure(
+            ErrorCode::Config,
+            format!("failed to read config: {error:#}"),
+            None,
+        )
+    })?;
+    let mut cursor = AdapterArgCursor::new(adapter_args);
+    let options = parse_run_engine_options(&mut cursor)?;
+
+    let mut blocks = vec![format!(
+        "## Project Config\n{}",
+        loaded.raw_or_placeholder()
+    )];
+    let mut envelope_text = String::new();
+    let mut touched_files = Vec::new();
+    let mut forbidden_paths = loaded.config.forbidden_paths.clone();
+    let mut selected_skills = Vec::new();
+
+    for input in &plugin.manifest.inputs {
+        match input.as_str() {
+            "diff" => {
+                let diff = diff_adapter(cwd, &loaded, &plugin.mode, &mut cursor)?;
+                envelope_text = diff.envelope_text;
+                touched_files.extend(diff.touched_files);
+                blocks.extend(diff.blocks);
+            }
+            "files" => {
+                let files = files_adapter(cwd, &loaded, &plugin.mode, &mut cursor)?;
+                envelope_text = files.envelope_text;
+                touched_files.extend(files.touched_files);
+                blocks.extend(files.blocks);
+            }
+            "task_envelope" => {
+                let task = task_envelope_adapter(cwd, &loaded, &mut cursor)?;
+                envelope_text = task.envelope_text;
+                forbidden_paths.extend(task.forbidden_paths);
+                touched_files.extend(task.touched_files);
+                blocks.extend(task.blocks);
+            }
+            "skills" => {
+                let skills = skills_adapter(cwd, &mut cursor)?;
+                if !skills.is_empty() {
+                    blocks.push(render_selected_skills(&skills));
+                    selected_skills = skills;
+                }
+            }
+            "guard" => {
+                run_guard_adapter(&touched_files, &forbidden_paths)?;
+            }
+            other => {
+                return Err(run_failure(
+                    ErrorCode::Config,
+                    format!("unknown input adapter in plugin {}: {other}", plugin.mode),
+                    None,
+                ));
+            }
+        }
+    }
+
+    if let Some(token) = cursor.first_unconsumed() {
+        return Err(run_failure(
+            ErrorCode::Usage,
+            format!("unknown argument for run {}: {token}", plugin.mode),
+            None,
+        ));
+    }
+
+    blocks.push(plugin.prompt.clone());
+    Ok(AssembledRun {
+        envelope_text,
+        prompt: blocks.join("\n\n"),
+        selected_skills,
+        options,
+    })
+}
+
+fn parse_run_engine_options(
+    cursor: &mut AdapterArgCursor,
+) -> std::result::Result<RunEngineOptions, RunFailure> {
+    let mut options = RunEngineOptions::default();
+    options.provider.provider = cursor.take_option("--provider")?;
+    options.provider.base_url = cursor.take_option("--base-url")?;
+    let models = cursor.take_repeated_options("--model")?;
+    if models.len() > 1 {
+        return Err(run_failure(
+            ErrorCode::Usage,
+            "--model accepts a single value per invocation; the v1 envelope contract is one envelope per invocation. Run models separately via a shell loop.",
+            None,
+        ));
+    }
+    options.model = models.into_iter().next();
+    if let Some(temperature) = cursor.take_option("--temperature")? {
+        options.temperature = temperature.parse::<f64>().map_err(|error| {
+            run_failure(
+                ErrorCode::Usage,
+                format!("--temperature must be a number: {error}"),
+                None,
+            )
+        })?;
+    }
+    Ok(options)
+}
+
+#[derive(Debug)]
+struct AdapterOutput {
+    blocks: Vec<String>,
+    envelope_text: String,
+    touched_files: Vec<String>,
+    forbidden_paths: Vec<String>,
+}
+
+fn diff_adapter(
+    cwd: &Path,
+    loaded: &LoadedConfig,
+    mode: &str,
+    cursor: &mut AdapterArgCursor,
+) -> std::result::Result<AdapterOutput, RunFailure> {
+    rebotica_git::assert_repository().map_err(|error| {
+        run_failure(
+            ErrorCode::Config,
+            format!("current directory is not a git repository: {error:#}"),
+            None,
+        )
+    })?;
+    let base = cursor.take_option("--base")?;
+    let range = cursor.take_option("--range")?;
+    let cached = cursor.take_flag("--cached");
+    let max_files = cursor
+        .take_option("--max-files")?
+        .map(|value| {
+            value.parse::<usize>().map_err(|error| {
+                run_failure(
+                    ErrorCode::Usage,
+                    format!("--max-files must be an integer: {error}"),
+                    None,
+                )
+            })
+        })
+        .transpose()?;
+    let max_lines = cursor
+        .take_option("--max-lines")?
+        .map(|value| {
+            value.parse::<usize>().map_err(|error| {
+                run_failure(
+                    ErrorCode::Usage,
+                    format!("--max-lines must be an integer: {error}"),
+                    None,
+                )
+            })
+        })
+        .transpose()?;
+    let goal = cursor.take_option("--goal")?;
+    let risk = cursor
+        .take_option("--risk")?
+        .unwrap_or_else(|| "medium".to_string());
+    let diff_source = selected_diff_source(&base, &range, cached)
+        .map_err(|error| run_failure(ErrorCode::Usage, error.to_string(), None))?;
     let diff_source_description = diff_source.description();
-    let selected_skills = resolve_skills(&cwd, &args.skills)?;
-    let changed_files = rebotica_git::changed_files_for(&diff_source)?;
+    let changed_files = rebotica_git::changed_files_for(&diff_source).map_err(|error| {
+        run_failure(
+            ErrorCode::Config,
+            format!("failed to inspect diff: {error:#}"),
+            None,
+        )
+    })?;
+    let changed_lines = rebotica_git::changed_line_count_for(&diff_source).map_err(|error| {
+        run_failure(
+            ErrorCode::Config,
+            format!("failed to inspect diff: {error:#}"),
+            None,
+        )
+    })?;
+    let effective_max_files = max_files.unwrap_or(loaded.config.default_limits.max_files_changed);
+    let effective_max_lines = max_lines.unwrap_or(loaded.config.default_limits.max_changed_lines);
+    if changed_files.len() > effective_max_files {
+        return Err(run_failure(
+            ErrorCode::OverLimit,
+            format!(
+                "changed file count {} exceeds limit {}",
+                changed_files.len(),
+                effective_max_files
+            ),
+            Some(serde_json::json!({
+                "kind": "files",
+                "limit": effective_max_files,
+                "actual": changed_files.len()
+            })),
+        ));
+    }
+    if changed_lines > effective_max_lines {
+        return Err(run_failure(
+            ErrorCode::OverLimit,
+            format!(
+                "changed line count {} exceeds limit {}",
+                changed_lines, effective_max_lines
+            ),
+            Some(serde_json::json!({
+                "kind": "lines",
+                "limit": effective_max_lines,
+                "actual": changed_lines
+            })),
+        ));
+    }
+
     let mut envelope = TaskEnvelope::for_config(
         rebotica_runlog::make_id(),
-        "review",
-        args.goal.unwrap_or_else(|| {
+        mode,
+        goal.unwrap_or_else(|| {
             format!("Review the selected git diff ({diff_source_description}) for correctness, risk, and missing tests.")
         }),
-        &loaded,
-        changed_files,
+        loaded,
+        changed_files.clone(),
         "json",
-        args.risk,
+        risk,
     );
-    if let Some(max_files) = args.max_files {
-        envelope.max_files_changed = max_files;
-    }
-    if let Some(max_lines) = args.max_lines {
-        envelope.max_changed_lines = max_lines;
-    }
-    let envelope_yaml = envelope.to_yaml()?;
-    let mut prompt_parts = vec![
-        read_harness_file("prompts/system/local-reviewer.md")?,
-        read_harness_file("prompts/contracts/review-only.md")?,
-        format!("## Task Envelope\n{envelope_yaml}"),
-        format!("## Project Config\n{}", loaded.raw_or_placeholder()),
-    ];
-    if !selected_skills.is_empty() {
-        prompt_parts.push(render_selected_skills(&selected_skills));
-    }
-    prompt_parts.extend([
+    envelope.max_files_changed = effective_max_files;
+    envelope.max_changed_lines = effective_max_lines;
+    let envelope_text = envelope.to_yaml().map_err(|error| {
+        run_failure(
+            ErrorCode::Internal,
+            format!("failed to serialize task envelope: {error:#}"),
+            None,
+        )
+    })?;
+    let blocks = vec![
+        format!("## Task Envelope\n{envelope_text}"),
         format!(
             "## Repository Instructions\n{}",
-            collect_instruction_files(&cwd)?
+            collect_instruction_files(cwd).map_err(|error| {
+                run_failure(
+                    ErrorCode::Config,
+                    format!("failed to collect repository instructions: {error:#}"),
+                    None,
+                )
+            })?
         ),
         format!(
             "## Git Status\n{}",
-            fenced(&rebotica_git::status_short()?, "text")
+            fenced(
+                &rebotica_git::status_short().map_err(|error| {
+                    run_failure(
+                        ErrorCode::Config,
+                        format!("git status failed: {error:#}"),
+                        None,
+                    )
+                })?,
+                "text"
+            )
         ),
         format!(
             "## Git Diff Source\n{}",
@@ -1897,181 +2402,366 @@ async fn review(args: ReviewArgs) -> Result<()> {
         ),
         format!(
             "## Git Diff Stat\n{}",
-            fenced(&rebotica_git::diff_stat_for(&diff_source)?, "text")
+            fenced(
+                &rebotica_git::diff_stat_for(&diff_source).map_err(|error| {
+                    run_failure(
+                        ErrorCode::Config,
+                        format!("git diff --stat failed: {error:#}"),
+                        None,
+                    )
+                })?,
+                "text"
+            )
         ),
         format!(
             "## Git Diff\n{}",
             fenced(
-                &truncate(&rebotica_git::diff_for(&diff_source)?, 120_000),
+                &truncate(
+                    &rebotica_git::diff_for(&diff_source).map_err(|error| {
+                        run_failure(
+                            ErrorCode::Config,
+                            format!("git diff failed: {error:#}"),
+                            None,
+                        )
+                    })?,
+                    120_000
+                ),
                 "diff"
             )
         ),
-    ]);
-    let prompt = prompt_parts.join("\n\n");
-    let model_requests = model_requests(args.models);
-    let multi_model = model_requests.len() > 1;
-    for model_override in model_requests {
-        let (model, text) = run_worker(
-            &loaded,
-            WorkerMode::Review,
-            model_override,
-            args.provider.clone(),
-            args.temperature,
-            prompt.clone(),
+    ];
+    Ok(AdapterOutput {
+        blocks,
+        envelope_text,
+        touched_files: changed_files,
+        forbidden_paths: Vec::new(),
+    })
+}
+
+fn files_adapter(
+    cwd: &Path,
+    loaded: &LoadedConfig,
+    mode: &str,
+    cursor: &mut AdapterArgCursor,
+) -> std::result::Result<AdapterOutput, RunFailure> {
+    rebotica_git::assert_repository().map_err(|error| {
+        run_failure(
+            ErrorCode::Config,
+            format!("current directory is not a git repository: {error:#}"),
+            None,
         )
-        .await?;
-        let run = rebotica_runlog::persist("review", &model, &envelope_yaml, &prompt, &text)?;
-        persist_selected_skills(&run.directory, &selected_skills)?;
-        if multi_model {
-            println!("===== model: {model} run: {} =====", run.id);
-        }
-        println!("{text}");
-        print_post_run_footer(&run.id, "review");
+    })?;
+    let goal = cursor.take_option("--goal")?;
+    let files = cursor.take_positionals();
+    if files.is_empty() {
+        return Err(run_failure(
+            ErrorCode::Usage,
+            format!("run {mode} requires at least one file"),
+            None,
+        ));
     }
-    Ok(())
-}
-
-fn review_diff_source(args: &ReviewArgs) -> Result<rebotica_git::DiffSource> {
-    selected_diff_source(&args.base, &args.range, args.cached)
-}
-
-fn model_requests(models: Vec<String>) -> Vec<Option<String>> {
-    if models.is_empty() {
-        vec![None]
+    let output_format = if mode == "explain" {
+        "analysis"
     } else {
-        models.into_iter().map(Some).collect()
-    }
-}
-
-async fn explain(args: FileWorkerArgs) -> Result<()> {
-    file_worker(args, WorkerMode::Explain, "explain", "analysis").await
-}
-
-async fn propose_tests(args: FileWorkerArgs) -> Result<()> {
-    file_worker(args, WorkerMode::Tests, "propose_tests", "json").await
-}
-
-async fn file_worker(
-    args: FileWorkerArgs,
-    mode: WorkerMode,
-    envelope_mode: &str,
-    output_format: &str,
-) -> Result<()> {
-    rebotica_git::assert_repository()?;
-    if args.files.is_empty() {
-        return Err(anyhow!("{envelope_mode} requires at least one file."));
-    }
-    let cwd = std::env::current_dir()?;
-    let loaded = LoadedConfig::read_from(&cwd)?;
-    let selected_skills = resolve_skills(&cwd, &args.skills)?;
-    rebotica_guard::ensure_allowed(&args.files, &loaded.config.forbidden_paths)?;
-    let file_blocks = args
-        .files
+        "json"
+    };
+    let default_goal = match mode {
+        "explain" => {
+            "Explain the selected files with attention to responsibilities, dependencies, and risks."
+        }
+        "tests" => "Propose focused missing tests for the selected files. Do not edit files.",
+        _ => "Handle the selected files within the task envelope.",
+    };
+    let envelope = TaskEnvelope::for_config(
+        rebotica_runlog::make_id(),
+        mode,
+        goal.unwrap_or_else(|| default_goal.to_string()),
+        loaded,
+        files.clone(),
+        output_format,
+        "low",
+    );
+    let envelope_text = envelope.to_yaml().map_err(|error| {
+        run_failure(
+            ErrorCode::Internal,
+            format!("failed to serialize task envelope: {error:#}"),
+            None,
+        )
+    })?;
+    let file_blocks = files
         .iter()
         .map(|file| {
-            let text = read_project_file(&cwd, file)?;
+            let text = read_project_file(cwd, file).map_err(|error| {
+                run_failure(
+                    ErrorCode::Usage,
+                    format!("failed to read selected file {file}: {error:#}"),
+                    None,
+                )
+            })?;
             Ok(format!(
                 "## File: {file}\n{}",
                 fenced(&truncate(&text, 80_000), &language_for(file))
             ))
         })
-        .collect::<Result<Vec<_>>>()?
+        .collect::<std::result::Result<Vec<_>, RunFailure>>()?
         .join("\n\n");
-    let default_goal = match mode {
-        WorkerMode::Explain => {
-            "Explain the selected files with attention to responsibilities, dependencies, and risks."
-        }
-        WorkerMode::Tests => "Propose focused missing tests for the selected files. Do not edit files.",
-        _ => "Handle the selected files within the task envelope.",
-    };
-    let envelope = TaskEnvelope::for_config(
-        rebotica_runlog::make_id(),
-        envelope_mode,
-        args.goal.unwrap_or_else(|| default_goal.to_string()),
-        &loaded,
-        args.files,
-        output_format,
-        "low",
-    );
-    let envelope_yaml = envelope.to_yaml()?;
-    let system_prompt = match mode {
-        WorkerMode::Tests => "prompts/system/local-test-writer.md",
-        _ => "prompts/system/delegated-run.md",
-    };
-    let mut prompt_parts = vec![
-        read_harness_file(system_prompt)?,
-        format!("## Task Envelope\n{envelope_yaml}"),
-    ];
-    if !selected_skills.is_empty() {
-        prompt_parts.push(render_selected_skills(&selected_skills));
+    Ok(AdapterOutput {
+        blocks: vec![format!("## Task Envelope\n{envelope_text}"), file_blocks],
+        envelope_text,
+        touched_files: files,
+        forbidden_paths: Vec::new(),
+    })
+}
+
+fn task_envelope_adapter(
+    cwd: &Path,
+    _loaded: &LoadedConfig,
+    cursor: &mut AdapterArgCursor,
+) -> std::result::Result<AdapterOutput, RunFailure> {
+    rebotica_git::assert_repository().map_err(|error| {
+        run_failure(
+            ErrorCode::Config,
+            format!("current directory is not a git repository: {error:#}"),
+            None,
+        )
+    })?;
+    let _dry_run = cursor.take_flag("--dry-run");
+    if cursor.take_flag("--apply") {
+        return Err(run_failure(
+            ErrorCode::Usage,
+            "direct patch application is intentionally disabled. Review the run output and apply manually.",
+            None,
+        ));
     }
-    prompt_parts.push(file_blocks);
-    let prompt = prompt_parts.join("\n\n");
-    let (model, text) = run_worker(
-        &loaded,
-        mode,
-        args.model,
-        args.provider,
-        args.temperature,
-        prompt.clone(),
-    )
-    .await?;
-    let run = rebotica_runlog::persist(envelope_mode, &model, &envelope_yaml, &prompt, &text)?;
-    persist_selected_skills(&run.directory, &selected_skills)?;
-    println!("{text}");
-    print_post_run_footer(&run.id, envelope_mode);
+    let envelope_arg = cursor.take_first_positional().ok_or_else(|| {
+        run_failure(
+            ErrorCode::Usage,
+            "run patch requires a task-envelope YAML path",
+            None,
+        )
+    })?;
+    let envelope_path = cwd.join(&envelope_arg);
+    let envelope_text = fs::read_to_string(&envelope_path).map_err(|error| {
+        run_failure(
+            ErrorCode::Usage,
+            format!("failed to read {}: {error}", envelope_path.display()),
+            None,
+        )
+    })?;
+    let allowed_files = parse_allowed_files_from_envelope(&envelope_text).map_err(|error| {
+        run_failure(
+            ErrorCode::Usage,
+            format!("failed to parse allowed_files from task envelope: {error:#}"),
+            None,
+        )
+    })?;
+    let forbidden_paths = parse_forbidden_files_from_envelope(&envelope_text).map_err(|error| {
+        run_failure(
+            ErrorCode::Usage,
+            format!("failed to parse forbidden_files from task envelope: {error:#}"),
+            None,
+        )
+    })?;
+    let current_context = collect_files_for_envelope(cwd, &allowed_files).map_err(|error| {
+        run_failure(
+            ErrorCode::Usage,
+            format!("failed to collect task envelope files: {error:#}"),
+            None,
+        )
+    })?;
+    Ok(AdapterOutput {
+        blocks: vec![
+            format!("## Task Envelope\n{envelope_text}"),
+            format!("## Current Context\n{current_context}"),
+        ],
+        envelope_text,
+        touched_files: allowed_files,
+        forbidden_paths,
+    })
+}
+
+fn skills_adapter(
+    cwd: &Path,
+    cursor: &mut AdapterArgCursor,
+) -> std::result::Result<Vec<ResolvedSkill>, RunFailure> {
+    let skills = cursor.take_repeated_options("--skill")?;
+    resolve_skills(cwd, &skills).map_err(|error| {
+        run_failure(
+            ErrorCode::Usage,
+            format!("failed to resolve selected skills: {error:#}"),
+            None,
+        )
+    })
+}
+
+fn run_guard_adapter(
+    files: &[String],
+    forbidden: &[String],
+) -> std::result::Result<(), RunFailure> {
+    if let Err(error) = rebotica_guard::ensure_allowed(files, forbidden) {
+        return Err(run_failure(
+            ErrorCode::GuardRejected,
+            error.to_string(),
+            Some(serde_json::json!({
+                "rejected_paths": [error.rejected_path()],
+                "forbidden_pattern": error.forbidden_pattern()
+            })),
+        ));
+    }
     Ok(())
 }
 
-async fn propose_patch(args: PatchArgs) -> Result<()> {
-    rebotica_git::assert_repository()?;
-    let cwd = std::env::current_dir()?;
-    let loaded = LoadedConfig::read_from(&cwd)?;
-    let selected_skills = resolve_skills(&cwd, &args.skills)?;
-    let envelope_path = cwd.join(&args.envelope);
-    let envelope_text = fs::read_to_string(&envelope_path)
-        .with_context(|| format!("failed to read {}", envelope_path.display()))?;
-    let allowed_files = parse_allowed_files_from_envelope(&envelope_text)?;
-    let mut forbidden = loaded.config.forbidden_paths.clone();
-    forbidden.extend(parse_forbidden_files_from_envelope(&envelope_text)?);
-    rebotica_guard::ensure_allowed(&allowed_files, &forbidden)?;
-    let mut prompt_parts = vec![
-        read_harness_file("prompts/system/delegated-run.md")?,
-        read_harness_file("prompts/contracts/patch-only.md")?,
-        format!("## Task Envelope\n{envelope_text}"),
-        format!("## Project Config\n{}", loaded.raw_or_placeholder()),
-    ];
-    if !selected_skills.is_empty() {
-        prompt_parts.push(render_selected_skills(&selected_skills));
+fn worker_mode_for_run(mode: &str) -> WorkerMode {
+    match mode {
+        "review" => WorkerMode::Review,
+        "explain" => WorkerMode::Explain,
+        "tests" => WorkerMode::Tests,
+        "patch" => WorkerMode::Patch,
+        _ => WorkerMode::Default,
     }
-    prompt_parts.push(format!(
-        "## Current Context\n{}",
-        collect_files_for_envelope(&cwd, &allowed_files)?
-    ));
-    let prompt = prompt_parts.join("\n\n");
-    let (model, text) = run_worker(
-        &loaded,
-        WorkerMode::Patch,
-        args.model,
-        args.provider,
-        args.temperature,
-        prompt.clone(),
-    )
-    .await?;
-    let run = rebotica_runlog::persist("propose_patch", &model, &envelope_text, &prompt, &text)?;
-    persist_selected_skills(&run.directory, &selected_skills)?;
-    if args.dry_run || !args.apply {
-        println!("{text}");
-        println!(
-            "\ndry_run: true\nrun_id: {}\nnext_step: review the unified diff before applying it",
-            run.id
-        );
-        print_post_run_footer(&run.id, "patch");
-        return Ok(());
+}
+
+fn finish_run_failure(
+    reporter: &mut Reporter,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+    kind: &str,
+    command: &str,
+    persisted: Option<&rebotica_runlog::PersistedRun>,
+    code: ErrorCode,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> Result<i32> {
+    let message = message.into();
+    if reporter.is_json() {
+        let mut builder = Envelope::builder(kind)
+            .command(command)
+            .started_at(started_at)
+            .data(EmptyData)
+            .error(EnvelopeError {
+                code,
+                message,
+                details,
+            });
+        if let Some(run) = persisted {
+            builder = builder.run_id(run.id.as_str());
+        }
+        let envelope = builder.build();
+        if let Some(run) = persisted {
+            rebotica_runlog::write_envelope(run, &envelope)?;
+        }
+        reporter.emit(&envelope)?;
+        Ok(code.exit_code())
+    } else {
+        let _ = reporter_mode;
+        Err(coded_error(code, message))
     }
-    Err(anyhow!(
-        "direct patch application is intentionally disabled in v0.1. Review the run output and apply manually."
-    ))
+}
+
+fn emit_plugin_warnings(registry: &Registry, mode: &str, reporter_mode: ReporterMode) {
+    if reporter_mode == ReporterMode::Quiet {
+        return;
+    }
+    emit_broken_layer_reasons(&registry.broken_layers_for_mode(mode), reporter_mode, true);
+}
+
+fn emit_broken_layer_reasons(
+    broken_layers: &[rebotica_core::run::BrokenPluginLayer],
+    reporter_mode: ReporterMode,
+    falling_back: bool,
+) {
+    if reporter_mode == ReporterMode::Quiet {
+        return;
+    }
+    for broken in broken_layers {
+        if falling_back {
+            eprintln!(
+                "warning: plugin '{}' is broken ({}); falling back to next layer",
+                broken.path, broken.reason
+            );
+        } else {
+            eprintln!(
+                "warning: plugin '{}' is broken ({})",
+                broken.path, broken.reason
+            );
+        }
+    }
+}
+
+fn load_run_registry(cwd: &Path) -> Result<Registry> {
+    let harness = harness_root()?;
+    let builtin = harness.join("prompts/runs.d");
+    Registry::load(RegistryRoots {
+        project: cwd.join(".rebotica/runs.d"),
+        user: rebotica_runlog::root().join("runs.d"),
+        common_schema: builtin.join("_common/runs-common.schema.json"),
+        builtin,
+    })
+}
+
+fn render_run_help(reporter: &mut Reporter, registry: &Registry, mode: &str) -> Result<()> {
+    match registry.resolve(mode) {
+        Ok(plugin) => {
+            reporter.human(&format!(
+                "{}\n\n{}\n\nUsage: rbtc run {} [OPTIONS]",
+                plugin.manifest.display_name, plugin.manifest.description, mode
+            ))?;
+            reporter.human("\nEngine options:")?;
+            reporter.human("  --model <MODEL>             Model alias or raw provider model id")?;
+            reporter
+                .human("  --provider <PROVIDER>       Provider name or OpenAI-compatible URL")?;
+            reporter.human("  --base-url <URL>            Override provider base URL")?;
+            reporter.human("  --temperature <NUMBER>      Sampling temperature")?;
+            reporter.human("\nAdapter options:")?;
+            for input in &plugin.manifest.inputs {
+                match input.as_str() {
+                    "diff" => {
+                        reporter.human("  --base <REF>                Review changes from merge-base(REF, HEAD)")?;
+                        reporter.human(
+                            "  --range <REV_RANGE>         Review an explicit git diff range",
+                        )?;
+                        reporter.human("  --cached                    Review staged changes")?;
+                        reporter
+                            .human("  --max-files <COUNT>         Override max_files_changed")?;
+                        reporter
+                            .human("  --max-lines <COUNT>         Override max_changed_lines")?;
+                        reporter.human("  --goal <TEXT>               Optional task goal")?;
+                        reporter.human("  --risk <TEXT>               Risk level recorded in the task envelope")?;
+                    }
+                    "files" => {
+                        reporter.human("  --goal <TEXT>               Optional task goal")?;
+                        reporter.human("  <FILE>...                   Project files to include")?;
+                    }
+                    "task_envelope" => {
+                        reporter.human(
+                            "  --dry-run                   Preserve dry-run patch behavior",
+                        )?;
+                        reporter.human("  --apply                     Rejected; direct application is disabled")?;
+                        reporter.human("  <TASK_ENVELOPE>             Task-envelope YAML path")?;
+                    }
+                    "skills" => {
+                        reporter.human(
+                            "  --skill <SKILL>             Attach a canonical or project skill",
+                        )?;
+                    }
+                    "guard" => {
+                        reporter.human(
+                            "  guard                       Runs configured forbidden-path checks",
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Err(_) => {
+            reporter.human(&format!("unknown run mode: {mode}"))?;
+            reporter.human("\nAvailable run modes:")?;
+            for item in registry.available_modes() {
+                reporter.human(&format!("  {:<12} {}", item.mode, item.description))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3182,17 +3872,6 @@ fn comment_card_labels_from_file(path: &Path) -> Result<Vec<String>> {
     Ok(labels)
 }
 
-fn print_post_run_footer(run_id: &str, area: &str) {
-    eprintln!();
-    eprintln!("---");
-    eprintln!("Rebotica run: {run_id}");
-    eprintln!("Prime next steps:");
-    eprintln!("  rbtc score {run_id} --rating 4 --accepted --label useful-{area}");
-    eprintln!(
-        "  rbtc comment-card new --from-run {run_id} --kind ux --area {area} --source prime --title \"...\""
-    );
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct RetroData {
     run_id: String,
@@ -3232,33 +3911,6 @@ fn retrospective(
         reporter.human(&data.path)?;
     }
     Ok(0)
-}
-
-async fn run_worker(
-    loaded: &LoadedConfig,
-    mode: WorkerMode,
-    model_override: Option<String>,
-    provider_args: ProviderArgs,
-    temperature: f64,
-    prompt: String,
-) -> Result<(String, String)> {
-    let model = resolve_model(loaded, mode, model_override)?;
-    let settings = provider_settings(loaded, provider_args)?;
-    let provider = OpenAICompatibleProvider::new(&settings)?;
-    let text = provider
-        .chat(
-            &model,
-            vec![
-                ChatMessage::new(
-                    "system",
-                    "You are a local model operating under a scoped task contract. Follow the supplied contract exactly.",
-                ),
-                ChatMessage::new("user", prompt),
-            ],
-            temperature,
-        )
-        .await?;
-    Ok((model, text))
 }
 
 fn resolve_model(
@@ -3967,21 +4619,30 @@ fn install_github(force: bool) -> Result<Vec<InstallActionData>> {
 fn harness_root() -> Result<PathBuf> {
     if let Ok(explicit) = std::env::var("REBOTICA_HOME") {
         let root = PathBuf::from(explicit);
-        if root.join("prompts/system/delegated-run.md").exists() {
+        if root
+            .join("prompts/runs.d/_common/runs-common.schema.json")
+            .exists()
+        {
             return Ok(root);
         }
     }
 
     let cwd = std::env::current_dir()?;
     for candidate in cwd.ancestors() {
-        if candidate.join("prompts/system/delegated-run.md").exists() {
+        if candidate
+            .join("prompts/runs.d/_common/runs-common.schema.json")
+            .exists()
+        {
             return Ok(candidate.to_path_buf());
         }
     }
 
     if let Ok(exe) = std::env::current_exe() {
         for candidate in exe.ancestors() {
-            if candidate.join("prompts/system/delegated-run.md").exists() {
+            if candidate
+                .join("prompts/runs.d/_common/runs-common.schema.json")
+                .exists()
+            {
                 return Ok(candidate.to_path_buf());
             }
         }
@@ -4319,39 +4980,36 @@ mod tests {
 
     #[test]
     fn delegated_modes_parse_under_run() {
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(args),
-        })) = Cli::try_parse_from(["rbtc", "run", "review", "--base", "main"])
+        let Some(Command::Run(args)) =
+            Cli::try_parse_from(["rbtc", "run", "review", "--base", "main"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected run command");
+        };
+        assert_eq!(args.mode, "review");
+        assert_eq!(args.adapter_args, vec!["--base", "main"]);
+
+        let Some(Command::Run(args)) =
+            Cli::try_parse_from(["rbtc", "run", "explain", "src/main.rs"])
+                .unwrap()
+                .command
+        else {
+            panic!("expected run command");
+        };
+        assert_eq!(args.mode, "explain");
+        assert_eq!(args.adapter_args, vec!["src/main.rs"]);
+
+        let Some(Command::Run(args)) = Cli::try_parse_from(["rbtc", "run", "tests", "src/main.rs"])
             .unwrap()
             .command
         else {
-            panic!("expected run review command");
+            panic!("expected run command");
         };
-        assert_eq!(args.base, Some("main".to_string()));
+        assert_eq!(args.mode, "tests");
+        assert_eq!(args.adapter_args, vec!["src/main.rs"]);
 
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Explain(args),
-        })) = Cli::try_parse_from(["rbtc", "run", "explain", "src/main.rs"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected run explain command");
-        };
-        assert_eq!(args.files, vec!["src/main.rs"]);
-
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Tests(args),
-        })) = Cli::try_parse_from(["rbtc", "run", "tests", "src/main.rs"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected run tests command");
-        };
-        assert_eq!(args.files, vec!["src/main.rs"]);
-
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Patch(args),
-        })) = Cli::try_parse_from([
+        let Some(Command::Run(args)) = Cli::try_parse_from([
             "rbtc",
             "run",
             "patch",
@@ -4361,10 +5019,26 @@ mod tests {
         .unwrap()
         .command
         else {
-            panic!("expected run patch command");
+            panic!("expected run command");
         };
-        assert_eq!(args.envelope, ".rebotica/tasks/task.yml");
-        assert!(args.dry_run);
+        assert_eq!(args.mode, "patch");
+        assert_eq!(
+            args.adapter_args,
+            vec![".rebotica/tasks/task.yml", "--dry-run"]
+        );
+    }
+
+    #[test]
+    fn run_mode_help_is_captured_for_engine_rendering() {
+        let Some(Command::Run(args)) = Cli::try_parse_from(["rbtc", "run", "review", "--help"])
+            .unwrap()
+            .command
+        else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(args.mode, "review");
+        assert_eq!(args.adapter_args, vec!["--help"]);
     }
 
     #[test]
@@ -4450,117 +5124,43 @@ mod tests {
     }
 
     #[test]
-    fn review_diff_source_flags_parse_public_variants() {
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(default_args),
-        })) = Cli::try_parse_from(["rbtc", "run", "review"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected run review command");
-        };
+    fn run_diff_adapter_flags_parse_public_variants() {
         assert_eq!(
-            review_diff_source(&default_args).unwrap(),
+            selected_diff_source(&None, &None, false).unwrap(),
             rebotica_git::DiffSource::WorkingTree
         );
-
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(base_args),
-        })) = Cli::try_parse_from(["rbtc", "run", "review", "--base", "origin/main"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected run review command");
-        };
         assert_eq!(
-            review_diff_source(&base_args).unwrap(),
+            selected_diff_source(&Some("origin/main".to_string()), &None, false).unwrap(),
             rebotica_git::DiffSource::Base("origin/main".to_string())
         );
-
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(range_args),
-        })) = Cli::try_parse_from(["rbtc", "run", "review", "--range", "main..HEAD"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected run review command");
-        };
         assert_eq!(
-            review_diff_source(&range_args).unwrap(),
+            selected_diff_source(&None, &Some("main..HEAD".to_string()), false).unwrap(),
             rebotica_git::DiffSource::Range("main..HEAD".to_string())
         );
-
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(cached_args),
-        })) = Cli::try_parse_from(["rbtc", "run", "review", "--cached"])
-            .unwrap()
-            .command
-        else {
-            panic!("expected run review command");
-        };
         assert_eq!(
-            review_diff_source(&cached_args).unwrap(),
+            selected_diff_source(&None, &None, true).unwrap(),
             rebotica_git::DiffSource::Cached
         );
     }
 
     #[test]
-    fn review_limit_overrides_parse() {
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(args),
-        })) = Cli::try_parse_from([
-            "rbtc",
-            "run",
-            "review",
-            "--max-files",
-            "6",
-            "--max-lines",
-            "450",
-        ])
-        .unwrap()
-        .command
-        else {
-            panic!("expected run review command");
-        };
+    fn adapter_cursor_consumes_diff_flags_strictly() {
+        let mut cursor = AdapterArgCursor::new(vec![
+            "--max-files".to_string(),
+            "6".to_string(),
+            "--max-lines=450".to_string(),
+            "--unknown".to_string(),
+        ]);
 
-        assert_eq!(args.max_files, Some(6));
-        assert_eq!(args.max_lines, Some(450));
-    }
-
-    #[test]
-    fn review_accepts_repeated_model_flags_for_side_by_side_runs() {
-        let Some(Command::Run(RunArgs {
-            mode: RunMode::Review(args),
-        })) = Cli::try_parse_from([
-            "rbtc", "run", "review", "--model", "gemma", "--model", "qwen",
-        ])
-        .unwrap()
-        .command
-        else {
-            panic!("expected run review command");
-        };
-
-        assert_eq!(args.models, vec!["gemma", "qwen"]);
         assert_eq!(
-            model_requests(args.models),
-            vec![Some("gemma".to_string()), Some("qwen".to_string())]
+            cursor.take_option("--max-files").unwrap(),
+            Some("6".to_string())
         );
-    }
-
-    #[test]
-    fn review_diff_source_flags_conflict() {
-        let error = Cli::try_parse_from([
-            "rbtc",
-            "run",
-            "review",
-            "--base",
-            "main",
-            "--range",
-            "main..HEAD",
-        ])
-        .unwrap_err();
-
-        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+        assert_eq!(
+            cursor.take_option("--max-lines").unwrap(),
+            Some("450".to_string())
+        );
+        assert_eq!(cursor.first_unconsumed(), Some("--unknown".to_string()));
     }
 
     #[test]
