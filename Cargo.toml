@@ -33,6 +33,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 rebotica-core = { path = "crates/rebotica-core" }
 rebotica-git = { path = "crates/rebotica-git" }
 rebotica-guard = { path = "crates/rebotica-guard" }
+rebotica-mcp = { path = "crates/rebotica-mcp" }
 rebotica-provider = { path = "crates/rebotica-provider" }
 rebotica-run = { path = "crates/rebotica-run" }
 rebotica-runlog = { path = "crates/rebotica-runlog" }
