@@ -294,6 +294,166 @@ pub fn count_events() -> Result<i64> {
     Ok(count)
 }
 
+/// Summary row returned by [`list_recent_runs`] and [`run_summary`].
+///
+/// Aggregates the latest `run_started` / `run_completed` /
+/// `prime_disposition` rows for a given `run_id` so callers don't need
+/// to re-join the ledger themselves.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub run_id: String,
+    /// The `run.*` envelope kind (e.g. `run.review`). Falls back to the
+    /// scorecard mode if no `run_completed` event is present.
+    pub kind: String,
+    pub envelope_shape: Option<EnvelopeShape>,
+    pub model: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    /// Whether the run completed successfully. `None` if no
+    /// `run_completed` event has been written (e.g. SIGKILL mid-run).
+    pub ok: Option<bool>,
+    pub error_code: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub disposition: Disposition,
+}
+
+/// List recent runs from the ledger, newest first.
+///
+/// Optionally filter by `kind` (e.g. `"run.review"`) and/or `model`.
+/// If `limit` is `None`, all rows are returned.
+pub fn list_recent_runs(
+    limit: Option<usize>,
+    kind_filter: Option<&str>,
+    model_filter: Option<&str>,
+) -> Result<Vec<RunSummary>> {
+    let conn = open()?;
+    let mut sql = String::from(
+        "SELECT DISTINCT run_id FROM ledger_events \
+         WHERE run_id IS NOT NULL \
+           AND event_type = 'run_started'",
+    );
+    if kind_filter.is_some() {
+        sql.push_str(" AND json_extract(payload_json, '$.kind') = :kind");
+    }
+    if model_filter.is_some() {
+        sql.push_str(" AND json_extract(payload_json, '$.model') = :model");
+    }
+    sql.push_str(" ORDER BY ts DESC");
+    if let Some(value) = limit {
+        sql.push_str(&format!(" LIMIT {value}"));
+    }
+
+    let mut stmt = conn.prepare(&sql).context("failed to prepare runs query")?;
+    let mut bindings: Vec<(&str, &dyn rusqlite::ToSql)> = Vec::new();
+    if let Some(value) = kind_filter.as_ref() {
+        bindings.push((":kind", value as &dyn rusqlite::ToSql));
+    }
+    if let Some(value) = model_filter.as_ref() {
+        bindings.push((":model", value as &dyn rusqlite::ToSql));
+    }
+    let run_ids: Vec<String> = stmt
+        .query_map(bindings.as_slice(), |row| row.get::<_, String>(0))
+        .context("failed to query runs")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("failed to read runs result set")?;
+
+    let mut summaries = Vec::with_capacity(run_ids.len());
+    for run_id in run_ids {
+        if let Some(summary) = run_summary_with_conn(&conn, &run_id)? {
+            summaries.push(summary);
+        }
+    }
+    Ok(summaries)
+}
+
+/// Summarize a single run. Returns `Ok(None)` if no events exist for
+/// `run_id` in the ledger.
+pub fn run_summary(run_id: &str) -> Result<Option<RunSummary>> {
+    let conn = open()?;
+    run_summary_with_conn(&conn, run_id)
+}
+
+fn run_summary_with_conn(conn: &Connection, run_id: &str) -> Result<Option<RunSummary>> {
+    let started = latest_payload(conn, run_id, EventType::RunStarted)?;
+    let completed = latest_payload(conn, run_id, EventType::RunCompleted)?;
+    let disposition_payload = latest_payload(conn, run_id, EventType::PrimeDisposition)?;
+
+    if started.is_none() && completed.is_none() {
+        return Ok(None);
+    }
+
+    let mut summary = RunSummary {
+        run_id: run_id.to_string(),
+        kind: String::new(),
+        envelope_shape: None,
+        model: None,
+        started_at: None,
+        ok: None,
+        error_code: None,
+        duration_ms: None,
+        disposition: Disposition::Unscored,
+    };
+
+    if let Some((payload, ts)) = started {
+        if let Ok(parsed) = serde_json::from_str::<RunStartedPayload>(&payload) {
+            summary.kind = parsed.kind;
+            summary.envelope_shape = Some(parsed.envelope_shape);
+            summary.model = Some(parsed.model);
+        }
+        summary.started_at = Some(ts);
+    }
+
+    if let Some((payload, _ts)) = completed {
+        if let Ok(parsed) = serde_json::from_str::<RunCompletedPayload>(&payload) {
+            if summary.kind.is_empty() {
+                summary.kind = parsed.kind;
+            }
+            if summary.envelope_shape.is_none() {
+                summary.envelope_shape = Some(parsed.envelope_shape);
+            }
+            if summary.model.is_none() {
+                summary.model = Some(parsed.model);
+            }
+            summary.ok = Some(parsed.ok);
+            summary.error_code = parsed.error_code;
+            summary.duration_ms = Some(parsed.duration_ms);
+        }
+    }
+
+    if let Some((payload, _ts)) = disposition_payload {
+        if let Ok(parsed) = serde_json::from_str::<PrimeDispositionPayload>(&payload) {
+            summary.disposition = parsed.disposition;
+        }
+    }
+
+    Ok(Some(summary))
+}
+
+fn latest_payload(
+    conn: &Connection,
+    run_id: &str,
+    event_type: EventType,
+) -> Result<Option<(String, DateTime<Utc>)>> {
+    let row = conn
+        .query_row(
+            "SELECT payload_json, ts FROM ledger_events \
+             WHERE run_id = ?1 AND event_type = ?2 \
+             ORDER BY id DESC LIMIT 1",
+            params![run_id, event_type.as_str()],
+            |row| {
+                let payload: String = row.get(0)?;
+                let ts: String = row.get(1)?;
+                Ok((payload, ts))
+            },
+        )
+        .optional()
+        .with_context(|| format!("failed to query {} for {run_id}", event_type.as_str()))?;
+    Ok(row.and_then(|(payload, ts)| {
+        DateTime::parse_from_rfc3339(&ts)
+            .ok()
+            .map(|dt| (payload, dt.with_timezone(&Utc)))
+    }))
+}
+
 /// Look up the model recorded for `run_id` by its `run_started` event.
 ///
 /// Returns `Ok(None)` if no `run_started` event exists or its payload is

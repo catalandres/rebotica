@@ -122,6 +122,8 @@ These kinds are emitted today:
 | `comment-card.consent` | `rbtc comment-card consent` | The consent state and target repo. |
 | `comment-card.submit` | `rbtc comment-card submit` | Submission result, including the GitHub issue url. |
 | `retro` | `rbtc retro` | The created retrospective path and source run id. |
+| `runs.list` | `rbtc runs list` | Recent runs from the ledger with `run_id`, `kind`, `model`, `started_at`, `ok`, `disposition`. |
+| `runs.show` | `rbtc runs show` | Apprentice card for a single run: `apprentice_model`, `confidence`, `useful_finding`, `rejected_claim`, `recommended_next`, plus paths to persisted artifacts. |
 | `run.review` | `rbtc run review` | Schema-validated review findings for a selected diff. |
 | `run.explain` | `rbtc run explain` | Schema-validated analysis for selected files. |
 | `run.tests` | `rbtc run tests` | Schema-validated proposed tests for selected files. |
@@ -266,8 +268,6 @@ The following are reserved by the v1 spec but not yet emitted. Do not parse anyt
 
 | `kind` | Command | Status |
 | --- | --- | --- |
-| `runs.list` | `rbtc runs list` | Awaiting issue #18. Command does not yet exist. |
-| `runs.show` | `rbtc runs show` | Awaiting issue #18. Command does not yet exist. |
 | `capabilities` | `rbtc capabilities` | Awaiting issue #17. Command does not yet exist. |
 
 ## Failure-mode guarantees
