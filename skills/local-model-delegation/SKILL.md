@@ -74,9 +74,17 @@ CLI output is verbose; the MCP variant returns clean JSON.
 
 ## Setup (one-time)
 
-For Claude Code to discover the MCP server, register it in `.claude/settings.json`. See [claude-settings-snippet.json](claude-settings-snippet.json) for the exact entry to merge.
+For Claude Code to discover the MCP server, register it once per project. Easiest:
 
-For Codex, MCP discovery is native once `rbtc mcp serve` is invokable.
+```sh
+claude mcp add --scope project rebotica rbtc -- mcp serve
+```
+
+That writes the entry to `.mcp.json` at the project root. To edit by hand instead, see [claude-settings-snippet.json](claude-settings-snippet.json) for the exact JSON.
+
+Restart any existing Claude Code session in the project for the registration to take effect. Verify with `/mcp` — `rebotica` should appear with the four tools.
+
+For Codex, MCP discovery is native once `rbtc mcp serve` is invokable; no equivalent file to edit.
 
 ## Codex parity
 
