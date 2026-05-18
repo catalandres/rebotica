@@ -81,6 +81,8 @@ enum Command {
     Skills(SkillsArgs),
     #[command(about = "Run delegated local-model work modes.")]
     Run(RunArgs),
+    #[command(about = "List and inspect recent delegated runs.")]
+    Runs(RunsArgs),
     #[command(about = "Serve apprentice tools over MCP for Prime agents (Claude Code, Codex).")]
     Mcp(McpArgs),
     #[command(about = "Check a selected git diff against forbidden paths and size limits.")]
@@ -242,6 +244,45 @@ struct RunArgs {
     mode: String,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     adapter_args: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+struct RunsArgs {
+    #[command(subcommand)]
+    command: RunsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RunsCommand {
+    #[command(about = "List recent delegated runs, newest first.")]
+    List(RunsListArgs),
+    #[command(about = "Show the apprentice card for a single run.")]
+    Show(RunsShowArgs),
+}
+
+#[derive(Debug, Parser)]
+struct RunsListArgs {
+    #[arg(
+        long,
+        value_name = "N",
+        default_value = "20",
+        help = "Maximum number of runs to list."
+    )]
+    limit: usize,
+    #[arg(
+        long,
+        value_name = "KIND",
+        help = "Filter by envelope kind (e.g. run.review)."
+    )]
+    kind: Option<String>,
+    #[arg(long, value_name = "MODEL", help = "Filter by model alias or id.")]
+    model: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct RunsShowArgs {
+    #[arg(value_name = "RUN_ID", help = "Run id under ~/.rebotica/runs.")]
+    run_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -609,6 +650,19 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             )
         }
         Command::Run(args) => run_plugin(args, reporter_mode, started_at).await,
+        Command::Runs(args) => {
+            let (kind, command) = match &args.command {
+                RunsCommand::List(_) => ("runs.list", "runs list"),
+                RunsCommand::Show(_) => ("runs.show", "runs show"),
+            };
+            handle_migrated_result(
+                runs(args, reporter_mode, started_at),
+                reporter_mode,
+                started_at,
+                kind,
+                command,
+            )
+        }
         Command::Mcp(args) => match args.command {
             McpCommand::Serve => mcp_serve(reporter_mode, started_at).await,
         },
@@ -703,6 +757,10 @@ fn command_path(cli: &Cli) -> String {
             SkillsCommand::Show(_) => "skills show",
         },
         Some(Command::Run(args)) => return format!("run {}", args.mode),
+        Some(Command::Runs(args)) => match &args.command {
+            RunsCommand::List(_) => "runs list",
+            RunsCommand::Show(_) => "runs show",
+        },
         Some(Command::Mcp(args)) => match args.command {
             McpCommand::Serve => "mcp serve",
         },
@@ -2297,6 +2355,380 @@ fn resolve_disposition(args: &ScoreArgs) -> rebotica_runlog::Disposition {
         return rebotica_runlog::Disposition::Reject;
     }
     rebotica_runlog::Disposition::Unscored
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunsListEntry {
+    run_id: String,
+    kind: String,
+    model: Option<String>,
+    started_at: Option<String>,
+    ok: Option<bool>,
+    error_code: Option<String>,
+    duration_ms: Option<u64>,
+    disposition: String,
+    source: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunsListData {
+    runs: Vec<RunsListEntry>,
+    filter_kind: Option<String>,
+    filter_model: Option<String>,
+    limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ApprenticeCard {
+    apprentice_model: Option<String>,
+    confidence: Option<u8>,
+    useful_finding: Option<String>,
+    rejected_claim: Option<String>,
+    recommended_next: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunsShowData {
+    run_id: String,
+    kind: String,
+    started_at: Option<String>,
+    ok: Option<bool>,
+    error_code: Option<String>,
+    disposition: String,
+    card: ApprenticeCard,
+    parsed_output_path: Option<String>,
+    envelope_path: Option<String>,
+    source: &'static str,
+}
+
+fn runs(args: RunsArgs, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
+    match args.command {
+        RunsCommand::List(list_args) => runs_list(list_args, reporter_mode, started_at),
+        RunsCommand::Show(show_args) => runs_show(show_args, reporter_mode, started_at),
+    }
+}
+
+fn runs_list(
+    args: RunsListArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let summaries = rebotica_runlog::ledger::list_recent_runs(
+        Some(args.limit),
+        args.kind.as_deref(),
+        args.model.as_deref(),
+    )
+    .context("failed to query ledger for recent runs")?;
+
+    let runs = summaries
+        .into_iter()
+        .map(|s| RunsListEntry {
+            run_id: s.run_id,
+            kind: s.kind,
+            model: s.model,
+            started_at: s.started_at.map(|ts| ts.to_rfc3339()),
+            ok: s.ok,
+            error_code: s.error_code,
+            duration_ms: s.duration_ms,
+            disposition: s.disposition.as_str().to_string(),
+            source: "ledger",
+        })
+        .collect::<Vec<_>>();
+
+    let data = RunsListData {
+        runs,
+        filter_kind: args.kind,
+        filter_model: args.model,
+        limit: args.limit,
+    };
+
+    if reporter.is_json() {
+        emit_success(&mut reporter, "runs.list", "runs list", started_at, &data)?;
+    } else if data.runs.is_empty() {
+        reporter.human("No runs recorded yet.")?;
+    } else {
+        reporter.human("recent runs (newest first):")?;
+        for entry in &data.runs {
+            let model = entry.model.as_deref().unwrap_or("?");
+            let ok = match entry.ok {
+                Some(true) => "ok ",
+                Some(false) => "FAIL",
+                None => "?   ",
+            };
+            let ts = entry.started_at.as_deref().unwrap_or("");
+            reporter.human(&format!(
+                "  {ok} {} {:24} {model:24} {ts}  [{}]",
+                entry.run_id, entry.kind, entry.disposition
+            ))?;
+        }
+    }
+    Ok(0)
+}
+
+fn runs_show(
+    args: RunsShowArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let mut reporter = Reporter::from_mode(reporter_mode);
+    let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
+    if !run_dir.exists() {
+        return Err(coded_error(
+            ErrorCode::Config,
+            format!("run not found: {}", args.run_id),
+        ));
+    }
+
+    let summary = rebotica_runlog::ledger::run_summary(&args.run_id)
+        .context("failed to read ledger summary")?;
+
+    let parsed_output_path = run_dir.join("parsed-output.json");
+    let envelope_path = run_dir.join("envelope.json");
+    let parsed = if parsed_output_path.exists() {
+        fs::read_to_string(&parsed_output_path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    } else {
+        None
+    };
+
+    let source = if summary.is_some() {
+        "ledger"
+    } else if parsed.is_some() {
+        "pre-ledger"
+    } else {
+        "stub"
+    };
+    let kind = summary
+        .as_ref()
+        .map(|s| s.kind.clone())
+        .or_else(|| envelope_kind_from_disk(&envelope_path))
+        .unwrap_or_default();
+    let apprentice_model = summary.as_ref().and_then(|s| s.model.clone());
+    let disposition = summary
+        .as_ref()
+        .map(|s| s.disposition.as_str().to_string())
+        .unwrap_or_else(|| rebotica_runlog::Disposition::Unscored.as_str().to_string());
+
+    let card = build_apprentice_card(&kind, parsed.as_ref(), apprentice_model.clone());
+
+    let data = RunsShowData {
+        run_id: args.run_id.clone(),
+        kind,
+        started_at: summary
+            .as_ref()
+            .and_then(|s| s.started_at.map(|ts| ts.to_rfc3339())),
+        ok: summary.as_ref().and_then(|s| s.ok),
+        error_code: summary.as_ref().and_then(|s| s.error_code.clone()),
+        disposition,
+        card,
+        parsed_output_path: parsed_output_path
+            .exists()
+            .then(|| parsed_output_path.display().to_string()),
+        envelope_path: envelope_path
+            .exists()
+            .then(|| envelope_path.display().to_string()),
+        source,
+    };
+
+    if reporter.is_json() {
+        emit_success(&mut reporter, "runs.show", "runs show", started_at, &data)?;
+    } else {
+        reporter.human(&render_apprentice_card_human(&data))?;
+    }
+    Ok(0)
+}
+
+fn envelope_kind_from_disk(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value
+        .get("kind")
+        .and_then(|k| k.as_str())
+        .map(|s| s.to_string())
+}
+
+fn build_apprentice_card(
+    kind: &str,
+    parsed: Option<&serde_json::Value>,
+    apprentice_model: Option<String>,
+) -> ApprenticeCard {
+    let confidence = parsed
+        .and_then(|v| v.get("confidence"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n.min(u8::MAX as u64) as u8);
+
+    let recommended_next = parsed
+        .and_then(|v| v.get("next_action"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let useful_finding = match kind {
+        "run.review" => parsed
+            .and_then(|v| v.get("findings"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .map(format_review_finding),
+        "run.tests" => parsed
+            .and_then(|v| v.get("proposed_tests"))
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .map(format_proposed_test),
+        "run.explain" => parsed
+            .and_then(|v| v.get("analysis"))
+            .and_then(|v| v.as_str())
+            .map(|s| first_sentence(s).to_string()),
+        "run.patch" => parsed
+            .and_then(|v| v.get("files_touched"))
+            .and_then(|v| v.as_array())
+            .map(|files| {
+                let names = files
+                    .iter()
+                    .filter_map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if names.is_empty() {
+                    "Patch returned no files_touched.".to_string()
+                } else {
+                    format!("Patch touches: {names}")
+                }
+            }),
+        _ => None,
+    };
+
+    let rejected_claim = Some(
+        "Hallucination-rate measurement not yet enabled (tracked in #51). \
+         Until that lands, no rejected claims can be surfaced automatically."
+            .to_string(),
+    );
+
+    ApprenticeCard {
+        apprentice_model,
+        confidence,
+        useful_finding,
+        rejected_claim,
+        recommended_next,
+    }
+}
+
+fn format_review_finding(value: &serde_json::Value) -> String {
+    let severity = value
+        .get("severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+    let summary = value
+        .get("summary")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no summary)");
+    let location = match (
+        value.get("file").and_then(|v| v.as_str()),
+        value.get("line").and_then(|v| v.as_u64()),
+    ) {
+        (Some(file), Some(line)) => format!(" {file}:{line}"),
+        (Some(file), None) => format!(" {file}"),
+        _ => String::new(),
+    };
+    let fix = value
+        .get("fix")
+        .and_then(|v| v.as_str())
+        .map(|s| format!("\n  Fix: {s}"))
+        .unwrap_or_default();
+    format!("[{severity}]{location}\n  {summary}{fix}")
+}
+
+fn format_proposed_test(value: &serde_json::Value) -> String {
+    let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    let scenario = value
+        .get("scenario")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no scenario)");
+    let file = value
+        .get("file")
+        .and_then(|v| v.as_str())
+        .map(|s| format!(" ({s})"))
+        .unwrap_or_default();
+    format!("{name}{file}\n  {scenario}")
+}
+
+fn first_sentence(text: &str) -> &str {
+    text.split(['.', '\n'])
+        .next()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(text)
+}
+
+fn render_apprentice_card_human(data: &RunsShowData) -> String {
+    let model = data.card.apprentice_model.as_deref().unwrap_or("(unknown)");
+    let confidence = data
+        .card
+        .confidence
+        .map(|c| format!("{c}/10"))
+        .unwrap_or_else(|| "?".to_string());
+    let ts = data.started_at.as_deref().unwrap_or("(unknown)");
+    let ok = match data.ok {
+        Some(true) => "ok",
+        Some(false) => "FAIL",
+        None => "?",
+    };
+
+    let mut out = String::new();
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(&format!(
+        " Apprentice: {model:30}  confidence: {confidence}\n"
+    ));
+    out.push_str(&format!(" Kind:       {:30}  ran: {ts}\n", data.kind));
+    out.push_str(&format!(
+        " Run ID:     {:30}  status: {ok} ({})\n",
+        data.run_id, data.disposition,
+    ));
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(" Useful finding:\n");
+    out.push_str(
+        &data
+            .card
+            .useful_finding
+            .as_deref()
+            .map(|s| indent_block(s, "   "))
+            .unwrap_or_else(|| "   (no finding extracted)\n".to_string()),
+    );
+    out.push('\n');
+    out.push_str(" Rejected claim:\n");
+    out.push_str(
+        &data
+            .card
+            .rejected_claim
+            .as_deref()
+            .map(|s| indent_block(s, "   "))
+            .unwrap_or_else(|| "   (none)\n".to_string()),
+    );
+    out.push('\n');
+    out.push_str(" Recommended next:\n");
+    out.push_str(
+        &data
+            .card
+            .recommended_next
+            .as_deref()
+            .map(|s| indent_block(s, "   "))
+            .unwrap_or_else(|| "   (none)\n".to_string()),
+    );
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(&format!(" source: {}", data.source));
+    if let Some(path) = &data.parsed_output_path {
+        out.push_str(&format!("\n parsed-output: {path}"));
+    }
+    out
+}
+
+fn indent_block(text: &str, prefix: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        out.push_str(prefix);
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
 }
 
 fn scorecards(reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
@@ -4185,6 +4617,142 @@ mod tests {
         assert_eq!(scorecard.rating, Some(5));
         assert_eq!(scorecard.labels, vec!["useful-review".to_string()]);
         assert_eq!(scorecard.notes.as_deref(), Some("caught a missing test"));
+    }
+
+    #[test]
+    fn apprentice_card_extracts_first_review_finding() {
+        let parsed = serde_json::json!({
+            "assumptions": [],
+            "confidence": 7,
+            "risks": [],
+            "next_action": "Prime should review the listed findings.",
+            "findings": [
+                {
+                    "severity": "major",
+                    "category": "correctness",
+                    "file": "src/example.rs",
+                    "line": 42,
+                    "summary": "Off-by-one in the loop guard.",
+                    "fix": "Change `<` to `<=`."
+                }
+            ]
+        });
+        let card = build_apprentice_card(
+            "run.review",
+            Some(&parsed),
+            Some("qwen-coder-32b".to_string()),
+        );
+        assert_eq!(card.apprentice_model.as_deref(), Some("qwen-coder-32b"));
+        assert_eq!(card.confidence, Some(7));
+        let finding = card.useful_finding.expect("should extract finding");
+        assert!(finding.contains("[major]"), "got: {finding}");
+        assert!(finding.contains("src/example.rs:42"), "got: {finding}");
+        assert!(finding.contains("Off-by-one"), "got: {finding}");
+        assert!(finding.contains("Fix: Change"), "got: {finding}");
+        assert_eq!(
+            card.recommended_next.as_deref(),
+            Some("Prime should review the listed findings.")
+        );
+        assert!(card
+            .rejected_claim
+            .as_deref()
+            .is_some_and(|s| s.contains("#51")));
+    }
+
+    #[test]
+    fn apprentice_card_extracts_first_proposed_test() {
+        let parsed = serde_json::json!({
+            "assumptions": [],
+            "confidence": 6,
+            "risks": [],
+            "next_action": "Implement the proposed tests.",
+            "proposed_tests": [
+                {
+                    "file": "tests/example.rs",
+                    "name": "rejects_invalid_input",
+                    "scenario": "Invalid input returns the documented typed error.",
+                    "kind": "unit"
+                }
+            ]
+        });
+        let card = build_apprentice_card("run.tests", Some(&parsed), None);
+        let finding = card.useful_finding.expect("should extract test");
+        assert!(finding.contains("rejects_invalid_input"));
+        assert!(finding.contains("tests/example.rs"));
+    }
+
+    #[test]
+    fn apprentice_card_handles_missing_parsed_output_gracefully() {
+        let card = build_apprentice_card("run.review", None, None);
+        assert!(card.useful_finding.is_none());
+        assert!(card.confidence.is_none());
+        assert!(card.recommended_next.is_none());
+        assert!(card.apprentice_model.is_none());
+        assert!(card.rejected_claim.is_some()); // always populated with the #51 note
+    }
+
+    #[test]
+    fn runs_list_returns_recent_completed_runs() {
+        let _lock = env_lock();
+        let temp = TempDir::new("runs-list");
+        let _home = EnvGuard::set("HOME", temp.path());
+
+        // Seed a run via the ledger.
+        let run_id = "test-run-1";
+        rebotica_runlog::ledger::append_event(
+            Some(run_id),
+            &rebotica_runlog::ledger::Event::RunStarted(
+                rebotica_runlog::ledger::RunStartedPayload {
+                    kind: "run.review".to_string(),
+                    envelope_shape: rebotica_runlog::ledger::EnvelopeShape::RunReview,
+                    model: "qwen-coder-32b".to_string(),
+                    provider: "lmstudio".to_string(),
+                    contract_version: 1,
+                },
+            ),
+        )
+        .unwrap();
+        rebotica_runlog::ledger::append_event(
+            Some(run_id),
+            &rebotica_runlog::ledger::Event::RunCompleted(
+                rebotica_runlog::ledger::RunCompletedPayload {
+                    kind: "run.review".to_string(),
+                    envelope_shape: rebotica_runlog::ledger::EnvelopeShape::RunReview,
+                    model: "qwen-coder-32b".to_string(),
+                    ok: true,
+                    error_code: None,
+                    duration_ms: 1234,
+                    output_bytes: Some(512),
+                    hallucination_rate: None,
+                    confidence: Some(7),
+                },
+            ),
+        )
+        .unwrap();
+
+        let summaries = rebotica_runlog::ledger::list_recent_runs(Some(10), None, None).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].run_id, run_id);
+        assert_eq!(summaries[0].kind, "run.review");
+        assert_eq!(summaries[0].model.as_deref(), Some("qwen-coder-32b"));
+        assert_eq!(summaries[0].ok, Some(true));
+        assert_eq!(summaries[0].duration_ms, Some(1234));
+
+        // Filter by kind.
+        let none =
+            rebotica_runlog::ledger::list_recent_runs(Some(10), Some("run.tests"), None).unwrap();
+        assert!(none.is_empty());
+        let one =
+            rebotica_runlog::ledger::list_recent_runs(Some(10), Some("run.review"), None).unwrap();
+        assert_eq!(one.len(), 1);
+
+        // Filter by model.
+        let none =
+            rebotica_runlog::ledger::list_recent_runs(Some(10), None, Some("gemma")).unwrap();
+        assert!(none.is_empty());
+        let one = rebotica_runlog::ledger::list_recent_runs(Some(10), None, Some("qwen-coder-32b"))
+            .unwrap();
+        assert_eq!(one.len(), 1);
     }
 
     #[test]
