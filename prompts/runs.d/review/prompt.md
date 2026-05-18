@@ -10,6 +10,12 @@ Concrete code-level issues belong in `findings`. Use `risks` for diff-level conc
 
 Return exactly one fenced JSON block. Do not include prose outside the block.
 
+JSON escaping is your responsibility inside string values:
+
+- Escape `"` as `\"` and newlines as `\n`.
+- Do NOT use backticks around quoted identifiers in prose (writing `` `"run.review"` `` inside a `summary` or `fix` string produces invalid JSON because the inner `"` is unescaped). Refer to identifiers by plain name: `run.review`, not `` `"run.review"` ``.
+- Keep every `summary`, `fix`, and `risks` string parseable when round-tripped through `serde_json::from_str`.
+
 Required fields:
 
 - `assumptions`: array of strings.
