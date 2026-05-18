@@ -166,6 +166,85 @@ Every run also gets a `scorecard.yml` written at allocation time with `dispositi
 
 The `--disposition` flag takes precedence over the legacy `--accepted` / `--rejected` shorthands; the shorthands continue to work and map to `accept` / `reject`.
 
+## Apprentice Ledger
+
+`~/.rebotica/ledger.db` is a SQLite database that records the v0.3+ event log driving routing, retrospectives, and (eventually) the federated benchmark. It is created and migrated on first event write; consumers can also open it read-only with `sqlite3`.
+
+### Schema
+
+Single append-only table:
+
+```sql
+CREATE TABLE ledger_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT    NOT NULL,           -- RFC 3339 UTC
+    run_id       TEXT,                       -- nullable; null for non-run events
+    event_type   TEXT    NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded
+    payload_json TEXT    NOT NULL            -- typed payload, shape per event_type
+);
+```
+
+`PRAGMA user_version` is `1` for the v0.3 baseline. Future schema bumps land additive migrations and increment this number. Schema changes never alter existing rows.
+
+### Event payload shapes (v0.3)
+
+`run_started`:
+
+```json
+{
+  "kind": "run.review",
+  "envelope_shape": "run_review",
+  "model": "qwen-coder-32b",
+  "provider": "lmstudio",
+  "contract_version": 1
+}
+```
+
+`run_completed`:
+
+```json
+{
+  "kind": "run.review",
+  "envelope_shape": "run_review",
+  "model": "qwen-coder-32b",
+  "ok": true,
+  "error_code": null,
+  "duration_ms": 4321,
+  "output_bytes": 1024,
+  "hallucination_rate": null,
+  "confidence": 7
+}
+```
+
+`hallucination_rate` is `null` until issue #51 ships the writer that computes it. `error_code` (snake_case `ErrorCode` name) is populated when `ok` is `false`.
+
+`prime_disposition`:
+
+```json
+{
+  "disposition": "accept",
+  "rating": 4,
+  "labels": ["useful_finding"],
+  "notes": "Tweaked one wording."
+}
+```
+
+`score_recorded`:
+
+```json
+{ "axis": "diff_review", "score": 4 }
+```
+
+### Derived views
+
+The schema ships three SQL views that aggregate `ledger_events` for ad-hoc inspection and for `rbtc runs show` (#18):
+
+- `v_per_model_stats` — per `(model, envelope_shape)`: `completed_runs`, `ok_runs`, `avg_confidence`, `avg_hallucination_rate`, `latest_ts`.
+- `v_per_envelope_stats` — per `envelope_shape`: `completed_runs`, `ok_runs`, `avg_confidence`, `avg_hallucination_rate`.
+- `v_disposition_breakdown` — per `disposition`: `rows_count`.
+
+These are SQL views, not materialized tables; they always reflect the current contents of `ledger_events`.
+
 ## Reserved kinds
 
 The following are reserved by the v1 spec but not yet emitted. Do not parse anything from these commands today.
