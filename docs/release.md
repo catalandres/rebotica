@@ -9,6 +9,8 @@ Rebotica's first public distribution should stay boring: a tagged source release
 - `--help` and `--version` always print human-readable text and exit 0, even with `--json` or `--quiet` set. These are not errors and do not produce envelopes.
 - Built-in `run review`, `run explain`, `run tests`, and `run patch` now route through the `run.*` plugin engine and emit schema-validated v1 envelopes.
 - **Behavior change:** `rbtc run review --model X --model Y` (multi-model side-by-side invocation) is no longer supported. The v1 envelope contract is one envelope per invocation, which can't carry N model responses without a redesign that would significantly complicate the contract for a power-user feature. Run models separately via a shell loop: `for m in X Y; do rbtc run review --model $m --json; done`.
+- `rbtc score RUN_ID` now accepts `--disposition <accept|reject|edit_then_use|unscored>` and writes the disposition back to the per-run `scorecard.yml`. The legacy `--accepted` / `--rejected` shorthands still work and map to `accept` / `reject`.
+- The built-in `prompts/runs.d/<mode>/prompt.md` example block is now drift-checked by `cargo test`: a regression that breaks any built-in prompt's example against its schema fails the release gate. New built-in modes must include a fenced ` ```json ` example block whose payload validates against the mode's `schema.json`.
 
 ### Envelope contract
 

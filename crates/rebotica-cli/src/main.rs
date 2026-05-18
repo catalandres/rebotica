@@ -278,6 +278,25 @@ struct GuardDiffArgs {
     max_lines: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DispositionArg {
+    Accept,
+    Reject,
+    EditThenUse,
+    Unscored,
+}
+
+impl From<DispositionArg> for rebotica_runlog::Disposition {
+    fn from(value: DispositionArg) -> Self {
+        match value {
+            DispositionArg::Accept => Self::Accept,
+            DispositionArg::Reject => Self::Reject,
+            DispositionArg::EditThenUse => Self::EditThenUse,
+            DispositionArg::Unscored => Self::Unscored,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 struct ScoreArgs {
     #[arg(value_name = "RUN_ID", help = "Run id under ~/.rebotica/runs.")]
@@ -286,14 +305,21 @@ struct ScoreArgs {
     rating: Option<u8>,
     #[arg(
         long,
+        value_enum,
+        conflicts_with_all = ["accepted", "rejected"],
+        help = "Prime disposition for the run.",
+    )]
+    disposition: Option<DispositionArg>,
+    #[arg(
+        long,
         conflicts_with = "rejected",
-        help = "Mark the run as accepted/useful."
+        help = "Shorthand for --disposition accept."
     )]
     accepted: bool,
     #[arg(
         long,
         conflicts_with = "accepted",
-        help = "Mark the run as rejected/not useful."
+        help = "Shorthand for --disposition reject."
     )]
     rejected: bool,
     #[arg(
@@ -3124,6 +3150,8 @@ struct ScoreEvent {
     project: String,
     rating: Option<u8>,
     accepted: Option<bool>,
+    #[serde(default)]
+    disposition: rebotica_runlog::Disposition,
     labels: Vec<String>,
     notes: String,
 }
@@ -3190,12 +3218,11 @@ fn score_data(args: ScoreArgs) -> Result<ScoreData> {
     }
 
     let scorecard = parse_scorecard_seed(&run_dir.join("scorecard.yml"))?;
-    let accepted = if args.accepted {
-        Some(true)
-    } else if args.rejected {
-        Some(false)
-    } else {
-        None
+    let disposition = resolve_disposition(&args);
+    let accepted = match disposition {
+        rebotica_runlog::Disposition::Accept => Some(true),
+        rebotica_runlog::Disposition::Reject => Some(false),
+        _ => None,
     };
     let event = ScoreEvent {
         event_id: rebotica_runlog::make_id(),
@@ -3214,8 +3241,9 @@ fn score_data(args: ScoreArgs) -> Result<ScoreData> {
             .unwrap_or_else(|| "unknown".to_string()),
         rating: args.rating,
         accepted,
-        labels: args.labels,
-        notes: args.notes.unwrap_or_default(),
+        disposition,
+        labels: args.labels.clone(),
+        notes: args.notes.clone().unwrap_or_default(),
     };
 
     fs::write(
@@ -3224,6 +3252,24 @@ fn score_data(args: ScoreArgs) -> Result<ScoreData> {
     )?;
     append_model_event(&event)?;
     rebuild_model_scorecards()?;
+
+    let rating = args.rating;
+    let labels = args.labels;
+    let notes = args.notes;
+    rebotica_runlog::update_scorecard(&args.run_id, |card| {
+        card.disposition = disposition;
+        if let Some(value) = rating {
+            card.rating = Some(value);
+        }
+        if !labels.is_empty() {
+            card.labels = labels;
+        }
+        if let Some(value) = notes {
+            card.notes = Some(value);
+        }
+    })
+    .with_context(|| format!("failed to update scorecard for run {}", args.run_id))?;
+
     Ok(ScoreData {
         event,
         feedback_path: run_dir.join("feedback.yml").display().to_string(),
@@ -3232,6 +3278,19 @@ fn score_data(args: ScoreArgs) -> Result<ScoreData> {
             .display()
             .to_string(),
     })
+}
+
+fn resolve_disposition(args: &ScoreArgs) -> rebotica_runlog::Disposition {
+    if let Some(value) = args.disposition {
+        return value.into();
+    }
+    if args.accepted {
+        return rebotica_runlog::Disposition::Accept;
+    }
+    if args.rejected {
+        return rebotica_runlog::Disposition::Reject;
+    }
+    rebotica_runlog::Disposition::Unscored
 }
 
 fn scorecards(reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
@@ -5242,6 +5301,7 @@ mod tests {
         score_data(ScoreArgs {
             run_id: "run-1".to_string(),
             rating: Some(5),
+            disposition: None,
             accepted: true,
             rejected: false,
             labels: vec!["useful-review".to_string()],
@@ -5252,12 +5312,50 @@ mod tests {
         let feedback = fs::read_to_string(run_dir.join("feedback.yml")).unwrap();
         assert!(feedback.contains("rating: 5"));
         assert!(feedback.contains("useful-review"));
+        assert!(feedback.contains("disposition: accept"));
         let events = fs::read_to_string(temp.path().join(".rebotica/model-events.jsonl")).unwrap();
         assert!(events.contains("local-reviewer"));
         let summary =
             fs::read_to_string(temp.path().join(".rebotica/model-scorecards.yml")).unwrap();
         assert!(summary.contains("local-reviewer"));
         assert!(summary.contains("average_rating: 5.0"));
+
+        let scorecard = rebotica_runlog::read_scorecard("run-1").unwrap();
+        assert_eq!(scorecard.disposition, rebotica_runlog::Disposition::Accept);
+        assert_eq!(scorecard.rating, Some(5));
+        assert_eq!(scorecard.labels, vec!["useful-review".to_string()]);
+        assert_eq!(scorecard.notes.as_deref(), Some("caught a missing test"));
+    }
+
+    #[test]
+    fn score_disposition_flag_takes_precedence_over_legacy_flags() {
+        let _lock = env_lock();
+        let temp = TempDir::new("score-disposition");
+        let _home = EnvGuard::set("HOME", temp.path());
+        let run_dir = rebotica_runlog::runs_root().join("run-2");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(
+            run_dir.join("scorecard.yml"),
+            "run_id: run-2\nproject: sample\nmodel: local-reviewer\nmode: review\n",
+        )
+        .unwrap();
+
+        score_data(ScoreArgs {
+            run_id: "run-2".to_string(),
+            rating: None,
+            disposition: Some(DispositionArg::EditThenUse),
+            accepted: false,
+            rejected: false,
+            labels: vec![],
+            notes: None,
+        })
+        .unwrap();
+
+        let scorecard = rebotica_runlog::read_scorecard("run-2").unwrap();
+        assert_eq!(
+            scorecard.disposition,
+            rebotica_runlog::Disposition::EditThenUse
+        );
     }
 
     #[test]
