@@ -1,0 +1,16 @@
+{
+  "_comment": "Merge this into .claude/settings.json AFTER the mcpServers snippet (see ../claude-settings-snippet.json). The matcher fires only for mcp__rebotica__* tool calls. The command path is project-relative when the skill is installed under .claude/skills/. Replace with an absolute path if you keep the skill elsewhere. Requires `jq` on PATH.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__rebotica__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/skills/local-model-delegation/hooks/post-tool-use.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
