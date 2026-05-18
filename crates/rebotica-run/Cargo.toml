@@ -1,24 +1,19 @@
 [package]
-name = "rebotica-cli"
+name = "rebotica-run"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "rbtc"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
+clap.workspace = true
 rebotica-core.workspace = true
 rebotica-git.workspace = true
 rebotica-guard.workspace = true
 rebotica-provider.workspace = true
-rebotica-run.workspace = true
 rebotica-runlog.workspace = true
-clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
