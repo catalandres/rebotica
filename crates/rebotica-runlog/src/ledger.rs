@@ -338,8 +338,9 @@ pub fn list_recent_runs(
         sql.push_str(" AND json_extract(payload_json, '$.model') = :model");
     }
     sql.push_str(" ORDER BY ts DESC");
-    if let Some(value) = limit {
-        sql.push_str(&format!(" LIMIT {value}"));
+    let limit_value = limit.map(|n| n as i64);
+    if limit_value.is_some() {
+        sql.push_str(" LIMIT :limit");
     }
 
     let mut stmt = conn.prepare(&sql).context("failed to prepare runs query")?;
@@ -349,6 +350,9 @@ pub fn list_recent_runs(
     }
     if let Some(value) = model_filter.as_ref() {
         bindings.push((":model", value as &dyn rusqlite::ToSql));
+    }
+    if let Some(value) = limit_value.as_ref() {
+        bindings.push((":limit", value as &dyn rusqlite::ToSql));
     }
     let run_ids: Vec<String> = stmt
         .query_map(bindings.as_slice(), |row| row.get::<_, String>(0))

@@ -2448,18 +2448,27 @@ fn runs_list(
     } else if data.runs.is_empty() {
         reporter.human("No runs recorded yet.")?;
     } else {
-        reporter.human("recent runs (newest first):")?;
+        // Padding sized for the canonical run-id format
+        // `YYYYMMDD-HHMMSS-XXXX` (20 chars).
+        reporter.human(&format!(
+            "  {:4} {:20} {:18} {:24} {:30} [{}]",
+            "stat", "run_id", "kind", "model", "started_at", "disposition"
+        ))?;
+        reporter.human(&format!(
+            "  {:4} {:20} {:18} {:24} {:30} {}",
+            "----", "------", "----", "-----", "----------", "-----------"
+        ))?;
         for entry in &data.runs {
             let model = entry.model.as_deref().unwrap_or("?");
             let ok = match entry.ok {
-                Some(true) => "ok ",
+                Some(true) => "ok  ",
                 Some(false) => "FAIL",
                 None => "?   ",
             };
             let ts = entry.started_at.as_deref().unwrap_or("");
             reporter.human(&format!(
-                "  {ok} {} {:24} {model:24} {ts}  [{}]",
-                entry.run_id, entry.kind, entry.disposition
+                "  {ok} {:20} {:18} {model:24} {ts:30} [{}]",
+                entry.run_id, entry.kind, entry.disposition,
             ))?;
         }
     }
@@ -2475,7 +2484,7 @@ fn runs_show(
     let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
     if !run_dir.exists() {
         return Err(coded_error(
-            ErrorCode::Config,
+            ErrorCode::Usage,
             format!("run not found: {}", args.run_id),
         ));
     }
@@ -2549,6 +2558,18 @@ fn envelope_kind_from_disk(path: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Maximum value of the common-schema `confidence` field. The schema
+/// declares `integer 0..=10`; anything outside that range is treated as
+/// missing rather than silently clamped to a larger byte.
+const CONFIDENCE_MAX: u64 = 10;
+
+/// Placeholder text for the apprentice card's "rejected claim" slot
+/// until the hallucination-rate writer (#51) wires real extraction.
+/// Extracted as a const so it's grep-able when that work lands.
+const REJECTED_CLAIM_PLACEHOLDER: &str =
+    "Hallucination-rate measurement not yet enabled (tracked in #51). \
+     Until that lands, no rejected claims can be surfaced automatically.";
+
 fn build_apprentice_card(
     kind: &str,
     parsed: Option<&serde_json::Value>,
@@ -2557,7 +2578,8 @@ fn build_apprentice_card(
     let confidence = parsed
         .and_then(|v| v.get("confidence"))
         .and_then(|v| v.as_u64())
-        .map(|n| n.min(u8::MAX as u64) as u8);
+        .filter(|n| *n <= CONFIDENCE_MAX)
+        .map(|n| n as u8);
 
     let recommended_next = parsed
         .and_then(|v| v.get("next_action"))
@@ -2597,11 +2619,7 @@ fn build_apprentice_card(
         _ => None,
     };
 
-    let rejected_claim = Some(
-        "Hallucination-rate measurement not yet enabled (tracked in #51). \
-         Until that lands, no rejected claims can be surfaced automatically."
-            .to_string(),
-    );
+    let rejected_claim = Some(REJECTED_CLAIM_PLACEHOLDER.to_string());
 
     ApprenticeCard {
         apprentice_model,
@@ -2717,6 +2735,9 @@ fn render_apprentice_card_human(data: &RunsShowData) -> String {
     out.push_str(&format!(" source: {}", data.source));
     if let Some(path) = &data.parsed_output_path {
         out.push_str(&format!("\n parsed-output: {path}"));
+    }
+    if let Some(path) = &data.envelope_path {
+        out.push_str(&format!("\n envelope:      {path}"));
     }
     out
 }
@@ -4689,6 +4710,86 @@ mod tests {
         assert!(card.recommended_next.is_none());
         assert!(card.apprentice_model.is_none());
         assert!(card.rejected_claim.is_some()); // always populated with the #51 note
+    }
+
+    #[test]
+    fn apprentice_card_extracts_first_sentence_of_explain_analysis() {
+        let parsed = serde_json::json!({
+            "assumptions": [],
+            "confidence": 8,
+            "risks": [],
+            "next_action": "Prime should use this analysis to plan the next change.",
+            "analysis": "The module owns event persistence. It exposes append_event for writers and run_summary for readers.\nSecondary: derived views.",
+        });
+        let card = build_apprentice_card("run.explain", Some(&parsed), None);
+        let finding = card.useful_finding.expect("should extract first sentence");
+        assert_eq!(
+            finding, "The module owns event persistence",
+            "should take everything before the first '.' or newline; got: {finding}"
+        );
+        assert_eq!(card.confidence, Some(8));
+    }
+
+    #[test]
+    fn apprentice_card_summarizes_patch_files_touched() {
+        let with_files = serde_json::json!({
+            "assumptions": [],
+            "confidence": 6,
+            "risks": [],
+            "next_action": "Review the patch.",
+            "patch": "diff --git ...",
+            "files_touched": ["src/foo.rs", "src/bar.rs"],
+        });
+        let card = build_apprentice_card("run.patch", Some(&with_files), None);
+        let finding = card.useful_finding.expect("should render files_touched");
+        assert!(finding.contains("src/foo.rs"));
+        assert!(finding.contains("src/bar.rs"));
+        assert!(finding.starts_with("Patch touches:"));
+
+        // The "no files_touched" fallback branch.
+        let empty = serde_json::json!({
+            "assumptions": [],
+            "confidence": 4,
+            "risks": [],
+            "next_action": "Human review needed.",
+            "patch": "",
+            "files_touched": [],
+        });
+        let card = build_apprentice_card("run.patch", Some(&empty), None);
+        let finding = card.useful_finding.expect("should render fallback");
+        assert!(
+            finding.contains("no files_touched"),
+            "fallback should call out empty list; got: {finding}"
+        );
+    }
+
+    #[test]
+    fn apprentice_card_drops_confidence_outside_schema_range() {
+        // Schema says 0..=10; a hallucinated 100 should not become 100u8
+        // (or even 255) silently. It should be dropped.
+        let parsed = serde_json::json!({
+            "assumptions": [],
+            "confidence": 100,
+            "risks": [],
+            "next_action": "...",
+            "findings": [],
+        });
+        let card = build_apprentice_card("run.review", Some(&parsed), None);
+        assert_eq!(
+            card.confidence, None,
+            "confidence > 10 should be dropped, not clamped"
+        );
+
+        // In-range value passes through.
+        let parsed_ok = serde_json::json!({
+            "assumptions": [],
+            "confidence": 7,
+            "risks": [],
+            "next_action": "...",
+            "findings": [],
+        });
+        let card = build_apprentice_card("run.review", Some(&parsed_ok), None);
+        assert_eq!(card.confidence, Some(7));
     }
 
     #[test]
