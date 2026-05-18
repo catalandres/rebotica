@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "rebotica": {
+      "type": "stdio",
+      "command": "rbtc",
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "env": {}
+    }
+  }
+}
