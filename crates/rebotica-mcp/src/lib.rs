@@ -328,3 +328,161 @@ pub async fn serve_stdio() -> Result<()> {
         .context("MCP server exited with error")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    //! Foundational tests for the apprentice server. Proposed by run
+    //! 20260518-190249-b5d4 via `mcp__rebotica__propose_tests` —
+    //! the apprentice's first dispositioned-as-`accept` corpus entry.
+    //!
+    //! Heavier proposals from that run (provider-failure mocking,
+    //! full RunOutcome dispatch, registry-load fault injection) are
+    //! intentionally deferred; they need mock infrastructure that
+    //! doesn't yet exist in this crate.
+
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn offline_probe_enabled_respects_truthy_values() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::unset(OFFLINE_PROBE_ENV);
+        assert!(!offline_probe_enabled(), "unset → false");
+
+        for truthy in ["1", "true", "yes", "on", "TRUE", "Yes"] {
+            let _g = EnvGuard::set(OFFLINE_PROBE_ENV, truthy);
+            assert!(offline_probe_enabled(), "value {truthy:?} should be truthy");
+        }
+
+        for falsy in ["0", "false", "no", "off", ""] {
+            let _g = EnvGuard::set(OFFLINE_PROBE_ENV, falsy);
+            assert!(!offline_probe_enabled(), "value {falsy:?} should be falsy");
+        }
+    }
+
+    #[test]
+    fn offline_probe_response_has_run_id_and_offline_marker() {
+        let result = offline_probe_response("review", "mcp.review_diff");
+        // CallToolResult wraps content; extract the text payload.
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["kind"], "run.review");
+        assert_eq!(body["command"], "mcp.review_diff");
+        assert_eq!(body["data"]["offline_probe"], true);
+        assert!(
+            body["run_id"].as_str().is_some_and(|s| !s.is_empty()),
+            "run_id should be present and non-empty"
+        );
+    }
+
+    #[test]
+    fn offline_probe_response_uses_health_check_kind_directly() {
+        let result = offline_probe_response("health_check", "mcp.health_check");
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            body["kind"], "health_check",
+            "health_check should not get the run.* prefix"
+        );
+    }
+
+    fn build_test_server() -> ApprenticeServer {
+        let cwd = std::env::current_dir().unwrap();
+        let registry = load_registry(&cwd).expect("workspace registry must load");
+        ApprenticeServer::new(cwd, registry)
+    }
+
+    #[tokio::test]
+    async fn propose_tests_rejects_empty_files() {
+        let server = build_test_server();
+        let err = server
+            .propose_tests(Parameters(FileTargetsRequest {
+                files: vec![],
+                model: None,
+            }))
+            .await
+            .expect_err("empty files should be rejected");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("files"),
+            "error message should mention `files`: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_files_rejects_empty_files() {
+        let server = build_test_server();
+        let err = server
+            .explain_files(Parameters(FileTargetsRequest {
+                files: vec![],
+                model: None,
+            }))
+            .await
+            .expect_err("empty files should be rejected");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("files"),
+            "error message should mention `files`: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn review_diff_rejects_unknown_source() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        // Force offline probe so we don't accidentally hit a provider if
+        // the source check is reordered.
+        let _g = EnvGuard::set(OFFLINE_PROBE_ENV, "1");
+        let server = build_test_server();
+        let err = server
+            .review_diff(Parameters(ReviewDiffRequest {
+                source: Some("not-a-real-source".to_string()),
+                model: None,
+                max_lines: None,
+                max_files: None,
+            }))
+            .await
+            .expect_err("unknown source should be rejected");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("not-a-real-source") || message.contains("unknown source"),
+            "error message should identify the bad source: {message}"
+        );
+    }
+}
