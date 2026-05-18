@@ -1114,7 +1114,13 @@ fn run_unknown_adapter_argument_is_usage_error() {
     assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["error"]["code"], "usage");
-    assert_eq!(json["run_id"], serde_json::Value::Null);
+    // Pre-persistence rejections record a `run_rejected` ledger event
+    // (see #59) and surface its id so callers can pivot to `rbtc runs
+    // show <id>` for context. The id must not be null.
+    let run_id = json["run_id"]
+        .as_str()
+        .expect("rejection should populate run_id");
+    assert!(!run_id.is_empty(), "run_id should be non-empty");
     assert!(json["error"]["message"]
         .as_str()
         .unwrap()

@@ -1014,8 +1014,8 @@ fn handle_run_outcome(
                         message: failure.message.clone(),
                         details: failure.details,
                     });
-                if let Some(run) = &failure.run {
-                    builder = builder.run_id(run.id.as_str());
+                if let Some(id) = failure.run_id.as_deref() {
+                    builder = builder.run_id(id);
                 }
                 let envelope = builder.build();
                 if let Some(run) = &failure.run {
@@ -2368,6 +2368,9 @@ struct RunsListEntry {
     duration_ms: Option<u64>,
     disposition: String,
     source: &'static str,
+    /// `true` for pre-persistence rejections (over_limit, guard_rejected,
+    /// missing model, config errors). These rows have no `run_dir` on disk.
+    rejected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2399,6 +2402,10 @@ struct RunsShowData {
     parsed_output_path: Option<String>,
     envelope_path: Option<String>,
     source: &'static str,
+    /// `true` for pre-persistence rejections — no run directory exists,
+    /// so on-disk fields are `None` and the card is unpopulated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    rejected: bool,
 }
 
 fn runs(args: RunsArgs, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
@@ -2433,6 +2440,7 @@ fn runs_list(
             duration_ms: s.duration_ms,
             disposition: s.disposition.as_str().to_string(),
             source: "ledger",
+            rejected: s.rejected,
         })
         .collect::<Vec<_>>();
 
@@ -2460,10 +2468,14 @@ fn runs_list(
         ))?;
         for entry in &data.runs {
             let model = entry.model.as_deref().unwrap_or("?");
-            let ok = match entry.ok {
-                Some(true) => "ok  ",
-                Some(false) => "FAIL",
-                None => "?   ",
+            let ok = if entry.rejected {
+                "REJ "
+            } else {
+                match entry.ok {
+                    Some(true) => "ok  ",
+                    Some(false) => "FAIL",
+                    None => "?   ",
+                }
             };
             let ts = entry.started_at.as_deref().unwrap_or("");
             reporter.human(&format!(
@@ -2482,15 +2494,17 @@ fn runs_show(
 ) -> Result<i32> {
     let mut reporter = Reporter::from_mode(reporter_mode);
     let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
-    if !run_dir.exists() {
+    let summary = rebotica_runlog::ledger::run_summary(&args.run_id)
+        .context("failed to read ledger summary")?;
+
+    // Pre-persistence rejections have a ledger row but no run directory.
+    // Anything else missing on both sides is genuinely unknown.
+    if !run_dir.exists() && !summary.as_ref().is_some_and(|s| s.rejected) {
         return Err(coded_error(
             ErrorCode::Usage,
             format!("run not found: {}", args.run_id),
         ));
     }
-
-    let summary = rebotica_runlog::ledger::run_summary(&args.run_id)
-        .context("failed to read ledger summary")?;
 
     let parsed_output_path = run_dir.join("parsed-output.json");
     let envelope_path = run_dir.join("envelope.json");
@@ -2539,6 +2553,7 @@ fn runs_show(
             .exists()
             .then(|| envelope_path.display().to_string()),
         source,
+        rejected: summary.as_ref().is_some_and(|s| s.rejected),
     };
 
     if reporter.is_json() {
@@ -2678,6 +2693,9 @@ fn first_sentence(text: &str) -> &str {
 }
 
 fn render_apprentice_card_human(data: &RunsShowData) -> String {
+    if data.rejected {
+        return render_rejection_card_human(data);
+    }
     let model = data.card.apprentice_model.as_deref().unwrap_or("(unknown)");
     let confidence = data
         .card
@@ -2739,6 +2757,25 @@ fn render_apprentice_card_human(data: &RunsShowData) -> String {
     if let Some(path) = &data.envelope_path {
         out.push_str(&format!("\n envelope:      {path}"));
     }
+    out
+}
+
+fn render_rejection_card_human(data: &RunsShowData) -> String {
+    let ts = data.started_at.as_deref().unwrap_or("(unknown)");
+    let code = data.error_code.as_deref().unwrap_or("(unknown)");
+    let mut out = String::new();
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(" REJECTED dispatch (no apprentice was invoked)\n");
+    out.push_str(&format!(" Kind:       {:30}  ran: {ts}\n", data.kind));
+    out.push_str(&format!(
+        " Run ID:     {:30}  error_code: {code}\n",
+        data.run_id,
+    ));
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(&format!(" source: {}\n", data.source));
+    out.push_str(
+        " (rejections record the why in the ledger row; no run directory exists.)\n",
+    );
     out
 }
 

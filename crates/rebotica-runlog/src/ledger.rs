@@ -14,7 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::{root, Disposition};
+use crate::{make_id, root, Disposition};
 
 /// Current schema version. Bump and add a migration when the table or view
 /// shape changes incompatibly.
@@ -128,6 +128,10 @@ pub enum EventType {
     RunCompleted,
     PrimeDisposition,
     ScoreRecorded,
+    /// A dispatch attempt that failed before reaching the
+    /// run-allocation stage (e.g. over_limit, guard_rejected, missing
+    /// model). Has no matching `run_started`/`run_completed` pair.
+    RunRejected,
 }
 
 impl EventType {
@@ -137,6 +141,7 @@ impl EventType {
             Self::RunCompleted => "run_completed",
             Self::PrimeDisposition => "prime_disposition",
             Self::ScoreRecorded => "score_recorded",
+            Self::RunRejected => "run_rejected",
         }
     }
 }
@@ -191,6 +196,7 @@ pub enum Event {
     RunCompleted(RunCompletedPayload),
     PrimeDisposition(PrimeDispositionPayload),
     ScoreRecorded(ScoreRecordedPayload),
+    RunRejected(RunRejectedPayload),
 }
 
 impl Event {
@@ -200,6 +206,7 @@ impl Event {
             Self::RunCompleted(_) => EventType::RunCompleted,
             Self::PrimeDisposition(_) => EventType::PrimeDisposition,
             Self::ScoreRecorded(_) => EventType::ScoreRecorded,
+            Self::RunRejected(_) => EventType::RunRejected,
         }
     }
 }
@@ -251,6 +258,38 @@ pub struct ScoreRecordedPayload {
     pub score: i64,
 }
 
+/// Payload for a [`Event::RunRejected`] event — a dispatch attempt that
+/// bailed before reaching run-allocation. Carries enough context for
+/// `rbtc runs show` to render an abbreviated rejection card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunRejectedPayload {
+    /// Best-effort kind (e.g. `run.review`). Falls back to `"run"` when
+    /// the rejection happened before plugin resolution.
+    pub kind: String,
+    /// Snake-case `ErrorCode` name (e.g. `over_limit`, `config`).
+    pub error_code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+/// Append a [`Event::RunRejected`] for a pre-persistence failure and
+/// return the freshly-generated `run_id` so callers can surface it
+/// (e.g. CLI prints it in the error envelope; the ledger has the row).
+///
+/// Best-effort: a ledger write failure logs a warning to stderr and
+/// returns an empty string. Callers should treat the returned id as
+/// optional information, not as a hard guarantee.
+pub fn record_rejection(payload: RunRejectedPayload) -> String {
+    let run_id = make_id();
+    let event = Event::RunRejected(payload);
+    if let Err(error) = append_event(Some(&run_id), &event) {
+        eprintln!("warning: failed to record run_rejected in ledger: {error:#}");
+        return String::new();
+    }
+    run_id
+}
+
 /// Append a typed event to the ledger. Returns the assigned `id`.
 ///
 /// Use [`append_event_at`] when an explicit timestamp is required (tests,
@@ -298,7 +337,10 @@ pub fn count_events() -> Result<i64> {
 ///
 /// Aggregates the latest `run_started` / `run_completed` /
 /// `prime_disposition` rows for a given `run_id` so callers don't need
-/// to re-join the ledger themselves.
+/// to re-join the ledger themselves. Pre-persistence rejections
+/// (recorded as standalone `run_rejected` events) are surfaced with
+/// `rejected = true`; for those rows `ok = Some(false)` and
+/// `started_at` is the rejection timestamp.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSummary {
     pub run_id: String,
@@ -314,11 +356,20 @@ pub struct RunSummary {
     pub error_code: Option<String>,
     pub duration_ms: Option<u64>,
     pub disposition: Disposition,
+    /// `true` when this summary describes a dispatch attempt that was
+    /// rejected before allocating a persisted run (no `run_started` /
+    /// `run_completed` pair). Surfaces over_limit, guard_rejected,
+    /// missing-model, and config failures in `rbtc runs list`.
+    #[serde(default)]
+    pub rejected: bool,
 }
 
 /// List recent runs from the ledger, newest first.
 ///
-/// Optionally filter by `kind` (e.g. `"run.review"`) and/or `model`.
+/// Includes both started runs (`run_started`) and pre-persistence
+/// rejections (`run_rejected`). Optionally filter by `kind` (e.g.
+/// `"run.review"`) and/or `model`. Note: rejections never have a model
+/// recorded, so a `model_filter` will exclude them by construction.
 /// If `limit` is `None`, all rows are returned.
 pub fn list_recent_runs(
     limit: Option<usize>,
@@ -327,17 +378,19 @@ pub fn list_recent_runs(
 ) -> Result<Vec<RunSummary>> {
     let conn = open()?;
     let mut sql = String::from(
-        "SELECT DISTINCT run_id FROM ledger_events \
+        "SELECT run_id, MAX(ts) AS latest_ts FROM ledger_events \
          WHERE run_id IS NOT NULL \
-           AND event_type = 'run_started'",
+           AND event_type IN ('run_started', 'run_rejected')",
     );
     if kind_filter.is_some() {
         sql.push_str(" AND json_extract(payload_json, '$.kind') = :kind");
     }
     if model_filter.is_some() {
+        // `run_rejected` events never carry a model; this filter
+        // therefore restricts the result set to started runs only.
         sql.push_str(" AND json_extract(payload_json, '$.model') = :model");
     }
-    sql.push_str(" ORDER BY ts DESC");
+    sql.push_str(" GROUP BY run_id ORDER BY latest_ts DESC");
     let limit_value = limit.map(|n| n as i64);
     if limit_value.is_some() {
         sql.push_str(" LIMIT :limit");
@@ -380,8 +433,9 @@ fn run_summary_with_conn(conn: &Connection, run_id: &str) -> Result<Option<RunSu
     let started = latest_payload(conn, run_id, EventType::RunStarted)?;
     let completed = latest_payload(conn, run_id, EventType::RunCompleted)?;
     let disposition_payload = latest_payload(conn, run_id, EventType::PrimeDisposition)?;
+    let rejected = latest_payload(conn, run_id, EventType::RunRejected)?;
 
-    if started.is_none() && completed.is_none() {
+    if started.is_none() && completed.is_none() && rejected.is_none() {
         return Ok(None);
     }
 
@@ -395,6 +449,7 @@ fn run_summary_with_conn(conn: &Connection, run_id: &str) -> Result<Option<RunSu
         error_code: None,
         duration_ms: None,
         disposition: Disposition::Unscored,
+        rejected: false,
     };
 
     if let Some((payload, ts)) = started {
@@ -420,6 +475,27 @@ fn run_summary_with_conn(conn: &Connection, run_id: &str) -> Result<Option<RunSu
             summary.ok = Some(parsed.ok);
             summary.error_code = parsed.error_code;
             summary.duration_ms = Some(parsed.duration_ms);
+        }
+    }
+
+    if let Some((payload, ts)) = rejected {
+        if let Ok(parsed) = serde_json::from_str::<RunRejectedPayload>(&payload) {
+            if summary.kind.is_empty() {
+                summary.kind = parsed.kind.clone();
+            }
+            if summary.envelope_shape.is_none() {
+                summary.envelope_shape = EnvelopeShape::from_run_kind(&parsed.kind);
+            }
+            if summary.error_code.is_none() {
+                summary.error_code = Some(parsed.error_code);
+            }
+            summary.rejected = true;
+            if summary.ok.is_none() {
+                summary.ok = Some(false);
+            }
+            if summary.started_at.is_none() {
+                summary.started_at = Some(ts);
+            }
         }
     }
 
@@ -505,6 +581,7 @@ pub fn latest_event_for_run(run_id: &str) -> Result<Option<(EventType, String)>>
             "run_completed" => EventType::RunCompleted,
             "prime_disposition" => EventType::PrimeDisposition,
             "score_recorded" => EventType::ScoreRecorded,
+            "run_rejected" => EventType::RunRejected,
             _ => EventType::RunStarted, // unknown future variants fall through to a safe default
         };
         (event_type, payload)
@@ -639,6 +716,47 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn record_rejection_surfaces_in_summary_and_listing() {
+        let _lock = env_lock();
+        let (_temp, _home) = fresh_home("ledger-rejection");
+
+        let id = record_rejection(RunRejectedPayload {
+            kind: "run.review".to_string(),
+            error_code: "over_limit".to_string(),
+            message: "diff exceeds 50000 lines".to_string(),
+            details: Some(serde_json::json!({ "lines": 60000 })),
+        });
+        assert!(!id.is_empty(), "rejection should return a run_id");
+
+        // run_summary recognises the rejected run despite the absence of
+        // any run_started / run_completed events.
+        let summary = run_summary(&id).unwrap().expect("summary should exist");
+        assert!(summary.rejected, "rejected flag should be set");
+        assert_eq!(summary.kind, "run.review");
+        assert_eq!(summary.envelope_shape, Some(EnvelopeShape::RunReview));
+        assert_eq!(summary.ok, Some(false));
+        assert_eq!(summary.error_code.as_deref(), Some("over_limit"));
+        assert!(summary.model.is_none());
+        assert!(summary.started_at.is_some());
+
+        // list_recent_runs includes rejections (it now scans both
+        // run_started and run_rejected event types).
+        let summaries = list_recent_runs(Some(10), None, None).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].run_id, id);
+        assert!(summaries[0].rejected);
+
+        // model filter excludes rejections by construction (no model on
+        // the rejection payload).
+        let filtered = list_recent_runs(Some(10), None, Some("any")).unwrap();
+        assert!(filtered.is_empty());
+
+        // kind filter still matches.
+        let kind_match = list_recent_runs(Some(10), Some("run.review"), None).unwrap();
+        assert_eq!(kind_match.len(), 1);
     }
 
     #[test]

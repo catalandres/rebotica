@@ -181,7 +181,7 @@ CREATE TABLE ledger_events (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           TEXT    NOT NULL,           -- RFC 3339 UTC
     run_id       TEXT,                       -- nullable; null for non-run events
-    event_type   TEXT    NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded
+    event_type   TEXT    NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded | run_rejected
     payload_json TEXT    NOT NULL            -- typed payload, shape per event_type
 );
 ```
@@ -251,6 +251,24 @@ The ledger's `EnvelopeShape` enum also reserves `review_diff`, `propose_tests`, 
 ```json
 { "axis": "diff_review", "score": 4 }
 ```
+
+`run_rejected` (added in #59) — emitted when a dispatch attempt fails before
+allocating a persisted run (e.g. `over_limit`, `guard_rejected`, missing model,
+config errors). It has no matching `run_started` / `run_completed` pair, but it
+does carry a `run_id` so callers can pivot to `rbtc runs show <id>`:
+
+```json
+{
+  "kind": "run.review",
+  "error_code": "over_limit",
+  "message": "diff exceeds 50000 lines",
+  "details": { "lines": 60000 }
+}
+```
+
+`kind` falls back to `"run"` when the rejection happened before plugin
+resolution. `error_code` is the snake_case `ErrorCode` name. `details` is
+optional and shape varies by failure mode.
 
 ### Derived views
 
