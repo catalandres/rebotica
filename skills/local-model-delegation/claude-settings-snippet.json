@@ -1,0 +1,9 @@
+{
+  "_comment": "Merge this into .claude/settings.json. The 'rebotica' key becomes the MCP server prefix: tools surface as mcp__rebotica__review_diff, etc. Change `command` if rbtc is not on PATH (use an absolute path).",
+  "mcpServers": {
+    "rebotica": {
+      "command": "rbtc",
+      "args": ["mcp", "serve"]
+    }
+  }
+}

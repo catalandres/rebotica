@@ -1,58 +1,83 @@
+---
+name: local-model-delegation
+description: Use this skill whenever the user asks for a code review of a diff, a test proposal, or an explanation of unfamiliar files. Calls Rebotica's local apprentice via MCP so the local model does the grunt work and Prime keeps judgment.
+---
+
 # Local Model Delegation
 
-Use this skill when Prime wants help from local models through Rebotica for scoped review, explanation, test proposal, documentation cleanup, or small patch drafting.
+You have access to a local-model apprentice via the Rebotica MCP server. Use it before you do the work yourself on any of these tasks:
 
-Rebotica is advisory by default. Local models do not own architecture, commits, pushes, merges, or final acceptance.
+- **Code review of a diff** → call `mcp__rebotica__review_diff` first.
+- **Proposing missing tests for files** → call `mcp__rebotica__propose_tests` first.
+- **Explaining unfamiliar files** → call `mcp__rebotica__explain_files` first.
+- **Diagnosing why delegated calls are failing** → call `mcp__rebotica__health_check`.
 
-## Allowed Work
+The apprentice is *advisory*. You retain full judgment: incorporate, override, or reject its findings. The point is to delegate the obvious so you spend cycles on the calls that need you.
 
-- Review a selected git diff.
-- Explain selected files.
-- Propose missing tests.
-- Draft small scoped patches.
-- Identify documentation drift.
-- Perform mechanical cleanup inside an explicit allowlist.
+## When to call which tool
 
-## Forbidden Unless Explicitly Approved
+| User intent (paraphrase)                                | Tool                                  | What it returns                                                              |
+| ------------------------------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------- |
+| "Review my changes" / "what's wrong with this diff?"    | `mcp__rebotica__review_diff`          | `findings[]` with severity, file, line, summary, fix; plus a confidence 0-10 |
+| "What tests am I missing?" / "test this file"           | `mcp__rebotica__propose_tests`        | `proposed_tests[]` with name, scenario, kind                                 |
+| "Explain this file" / "what does this do?"              | `mcp__rebotica__explain_files`        | `analysis` (string) covering responsibilities, deps, risks                   |
+| "Is the local model working?" / "why is rbtc failing?"  | `mcp__rebotica__health_check`         | `{ provider, base_url, ok, model_count, models }`                            |
 
-- Auth architecture.
-- Authorization behavior.
-- Security-sensitive code.
-- Database migration semantics.
-- Dependency additions.
-- Large cross-cutting refactors.
-- Generated files.
-- Direct commits.
-- Direct pushes.
+For `review_diff`, the `source` parameter selects the diff:
+- `"working-tree"` (default) — unstaged changes vs HEAD
+- `"staged"` — index vs HEAD
+- `"range:BASE..HEAD"` — explicit ref range
 
-## Workflow
+## After acting on apprentice output
 
-1. Read `.rebotica.yml` or `.rebotica/project.yml`.
-2. Define a narrow task.
-3. Create or inspect the task envelope.
-4. Validate allowed, forbidden, and sensitive files.
-5. Invoke Rebotica with `rbtc`.
-6. Treat local output as advisory.
-7. Apply a proposed patch only after reviewing the diff.
-8. Run project checks.
-9. Summarize the result and record a retrospective if useful.
-
-## Commands
-
-Use:
+Record what you did with the apprentice's output so it can learn from real use:
 
 ```sh
-rbtc run review
-rbtc run review --base origin/main
-rbtc run explain path/to/file
-rbtc run tests path/to/file
-rbtc run patch .rebotica/tasks/task.yml --dry-run
-rbtc guard-diff
-rbtc guard-diff --base origin/main
+rbtc score RUN_ID --disposition <accept|reject|edit_then_use>
 ```
 
-If `rbtc` is not on `PATH`, use the harness wrapper path directly.
+Use:
+- `accept` — you used the output substantively, no edits.
+- `edit_then_use` — you used it with edits.
+- `reject` — you discarded it (hallucination, off-topic, low quality).
 
-## Acceptance
+The `RUN_ID` is the `run_id` field in the apprentice's tool response. If a `PostToolUse` hook is configured (see [hooks/](hooks/)), a placeholder `unscored` row is written automatically and you can upgrade it later with the explicit disposition.
 
-Never accept local-model output solely because it was generated. Prime must review the content, verify scope, and run appropriate checks.
+## What the apprentice should NOT be used for
+
+Even when these are technically in-scope for one of the tools above, do not delegate without explicit user instruction:
+
+- Auth architecture and authorization behavior.
+- Security-sensitive code paths (secrets handling, crypto, sandboxing).
+- Database migration semantics.
+- Dependency additions or version bumps.
+- Large cross-cutting refactors.
+- Generated files.
+- Anything that would result in a commit, push, or merge.
+
+The apprentice never commits, pushes, or merges. It returns advisory JSON. You apply.
+
+## CLI fallback
+
+If MCP tool calls fail (e.g., MCP server not configured or unreachable), the same modes are available via the CLI:
+
+```sh
+rbtc run review                    # working tree diff
+rbtc run review --cached           # staged diff
+rbtc run review --base origin/main # range
+rbtc run explain path/to/file
+rbtc run tests path/to/file
+rbtc health
+```
+
+CLI output is verbose; the MCP variant returns clean JSON.
+
+## Setup (one-time)
+
+For Claude Code to discover the MCP server, register it in `.claude/settings.json`. See [claude-settings-snippet.json](claude-settings-snippet.json) for the exact entry to merge.
+
+For Codex, MCP discovery is native once `rbtc mcp serve` is invokable.
+
+## Codex parity
+
+This skill works identically under Codex when installed via `rbtc install codex` to `.agents/skills/local-model-delegation/`. Codex's MCP support is native: no settings.json equivalent is needed. The same four `mcp__rebotica__*` tool names should appear automatically.
