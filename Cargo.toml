@@ -6,6 +6,7 @@ members = [
   "crates/rebotica-guard",
   "crates/rebotica-mcp",
   "crates/rebotica-provider",
+  "crates/rebotica-run",
   "crates/rebotica-runlog"
 ]
 resolver = "2"
@@ -33,4 +34,5 @@ rebotica-core = { path = "crates/rebotica-core" }
 rebotica-git = { path = "crates/rebotica-git" }
 rebotica-guard = { path = "crates/rebotica-guard" }
 rebotica-provider = { path = "crates/rebotica-provider" }
+rebotica-run = { path = "crates/rebotica-run" }
 rebotica-runlog = { path = "crates/rebotica-runlog" }

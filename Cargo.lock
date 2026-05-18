@@ -1153,6 +1153,7 @@ dependencies = [
  "rebotica-git",
  "rebotica-guard",
  "rebotica-provider",
+ "rebotica-run",
  "rebotica-runlog",
  "serde",
  "serde_json",
@@ -1202,6 +1203,24 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rebotica-run"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "rebotica-core",
+ "rebotica-git",
+ "rebotica-guard",
+ "rebotica-provider",
+ "rebotica-runlog",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
 ]
 
 [[package]]
