@@ -2233,7 +2233,7 @@ fn parse_run_engine_options(
     if models.len() > 1 {
         return Err(run_failure(
             ErrorCode::Usage,
-            "--model accepts a single value per invocation; multi-model support is tracked in #40",
+            "--model accepts a single value per invocation; the v1 envelope contract is one envelope per invocation. Run models separately via a shell loop.",
             None,
         ));
     }
