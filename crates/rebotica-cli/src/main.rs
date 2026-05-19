@@ -2613,6 +2613,104 @@ struct RunsShowData {
     /// so on-disk fields are `None` and the card is unpopulated.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     rejected: bool,
+    /// Populated when the apprentice ran but its output failed extraction
+    /// or schema validation. Lifts the contents of `parse-failure.json`
+    /// into the show output so Prime can see what actually went wrong
+    /// without having to inspect the run directory by hand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_failure: Option<ParseFailureSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ParseFailureSummary {
+    /// Whether the balanced-brace fallback substituted an object after
+    /// the fence extractor's content failed to parse. When true, the
+    /// `validation_errors` typically describe the *substituted*
+    /// sub-object, not the model's intended payload — `fence_parse_error`
+    /// is the real diagnostic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fence_parse_error: Option<String>,
+    /// Top-level parse error from `extract_json_payload`, present when
+    /// no JSON object could be extracted at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extraction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_used: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_error_count: Option<usize>,
+    /// First few validation errors, formatted for human display. Capped
+    /// to avoid flooding the card when the substituted sub-object misses
+    /// many required fields.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    validation_errors_brief: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_response_path: Option<String>,
+}
+
+/// Maximum number of validation errors surfaced in the human card.
+/// When the balanced-brace fallback substitutes an unrelated sub-object,
+/// every required field on the *real* schema is reported missing — that
+/// can be 5+ entries of identical-shaped noise. Capping at 3 keeps the
+/// card readable; the full list remains in `parse-failure.json`.
+const PARSE_FAILURE_BRIEF_LIMIT: usize = 3;
+
+fn load_parse_failure(path: &Path) -> Option<ParseFailureSummary> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let obj = value.as_object()?;
+
+    let string_field = |key: &str| {
+        obj.get(key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    };
+
+    let validation_errors = obj
+        .get("validation_errors")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let validation_error_count = obj
+        .get("validation_errors")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.len());
+    let validation_errors_brief: Vec<String> = validation_errors
+        .iter()
+        .take(PARSE_FAILURE_BRIEF_LIMIT)
+        .map(format_validation_error)
+        .collect();
+
+    Some(ParseFailureSummary {
+        fence_parse_error: string_field("fence_parse_error"),
+        parse_error: string_field("parse_error"),
+        extraction: string_field("extraction"),
+        fallback_used: obj.get("fallback_used").and_then(|v| v.as_bool()),
+        validation_error_count,
+        validation_errors_brief,
+        raw_response_path: string_field("raw_response_path"),
+    })
+}
+
+fn format_validation_error(value: &serde_json::Value) -> String {
+    let instance_path = value
+        .get("instance_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let message = value
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no message)");
+    let combined = if instance_path.is_empty() {
+        message.to_string()
+    } else {
+        format!("{instance_path}: {message}")
+    };
+    // Collapse embedded newlines so each entry stays on a single line in
+    // the card — `indent_block` would otherwise repeat the bullet prefix
+    // on continuation lines.
+    combined.replace('\n', " ").replace('\r', " ")
 }
 
 fn runs(args: RunsArgs, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
@@ -2715,10 +2813,16 @@ fn runs_show(
 
     let parsed_output_path = run_dir.join("parsed-output.json");
     let envelope_path = run_dir.join("envelope.json");
+    let parse_failure_path = run_dir.join("parse-failure.json");
     let parsed = if parsed_output_path.exists() {
         fs::read_to_string(&parsed_output_path)
             .ok()
             .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    } else {
+        None
+    };
+    let parse_failure = if parse_failure_path.exists() {
+        load_parse_failure(&parse_failure_path)
     } else {
         None
     };
@@ -2761,6 +2865,7 @@ fn runs_show(
             .then(|| envelope_path.display().to_string()),
         source,
         rejected: summary.as_ref().is_some_and(|s| s.rejected),
+        parse_failure,
     };
 
     if reporter.is_json() {
@@ -2903,6 +3008,11 @@ fn render_apprentice_card_human(data: &RunsShowData) -> String {
     if data.rejected {
         return render_rejection_card_human(data);
     }
+    if data.ok == Some(false) {
+        if let Some(failure) = data.parse_failure.as_ref() {
+            return render_parse_failure_card_human(data, failure);
+        }
+    }
     let model = data.card.apprentice_model.as_deref().unwrap_or("(unknown)");
     let confidence = data
         .card
@@ -2963,6 +3073,58 @@ fn render_apprentice_card_human(data: &RunsShowData) -> String {
     }
     if let Some(path) = &data.envelope_path {
         out.push_str(&format!("\n envelope:      {path}"));
+    }
+    out
+}
+
+fn render_parse_failure_card_human(data: &RunsShowData, failure: &ParseFailureSummary) -> String {
+    let ts = data.started_at.as_deref().unwrap_or("(unknown)");
+    let code = data.error_code.as_deref().unwrap_or("(unknown)");
+    let model = data.card.apprentice_model.as_deref().unwrap_or("(unknown)");
+    let mut out = String::new();
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(" FAILED apprentice run (output did not match schema)\n");
+    out.push_str(&format!(" Apprentice: {model:30}  ran: {ts}\n"));
+    out.push_str(&format!(" Kind:       {:30}  error_code: {code}\n", data.kind));
+    out.push_str(&format!(
+        " Run ID:     {:30}  status: FAIL ({})\n",
+        data.run_id, data.disposition,
+    ));
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+
+    if let Some(fence_error) = failure.fence_parse_error.as_deref() {
+        out.push_str(" Likely cause (fence parse error):\n");
+        out.push_str(&indent_block(fence_error, "   "));
+        out.push_str(
+            "   Note: the fallback substituted a different sub-object;\n   \
+             validation errors below describe that substitution, not the\n   \
+             model's intended payload.\n",
+        );
+    } else if let Some(parse_error) = failure.parse_error.as_deref() {
+        out.push_str(" Likely cause (no parseable JSON found):\n");
+        out.push_str(&indent_block(parse_error, "   "));
+    }
+
+    if let Some(count) = failure.validation_error_count {
+        if count > 0 {
+            out.push('\n');
+            out.push_str(&format!(" Validation errors ({count}):\n"));
+            for err in &failure.validation_errors_brief {
+                out.push_str(&indent_block(err, "   • "));
+            }
+            if count > failure.validation_errors_brief.len() {
+                out.push_str(&format!(
+                    "   … ({} more, see parse-failure.json)\n",
+                    count - failure.validation_errors_brief.len()
+                ));
+            }
+        }
+    }
+
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(&format!(" source: {}", data.source));
+    if let Some(path) = failure.raw_response_path.as_deref() {
+        out.push_str(&format!("\n model-response: {path}"));
     }
     out
 }
@@ -5005,6 +5167,163 @@ mod tests {
             finding.contains("no files_touched"),
             "fallback should call out empty list; got: {finding}"
         );
+    }
+
+    #[test]
+    fn load_parse_failure_lifts_fence_error_and_validation_summary() {
+        let temp = TempDir::new("parse-failure-load");
+        let path = temp.path().join("parse-failure.json");
+        let payload = serde_json::json!({
+            "mode": "review",
+            "extraction": "fallback",
+            "fallback_used": true,
+            "fence_parse_error": "expected `,` or `}` at line 9 column 25",
+            "raw_response_path": "/runs/abc/model-response.md",
+            "validation_errors": [
+                { "instance_path": "", "message": "\"assumptions\" is a required property" },
+                { "instance_path": "", "message": "\"confidence\" is a required property" },
+                { "instance_path": "", "message": "\"risks\" is a required property" },
+                { "instance_path": "", "message": "\"next_action\" is a required property" },
+                { "instance_path": "", "message": "\"findings\" is a required property" },
+            ],
+        });
+        fs::write(&path, serde_json::to_string_pretty(&payload).unwrap()).unwrap();
+
+        let summary = load_parse_failure(&path).expect("should parse");
+        assert_eq!(
+            summary.fence_parse_error.as_deref(),
+            Some("expected `,` or `}` at line 9 column 25")
+        );
+        assert_eq!(summary.extraction.as_deref(), Some("fallback"));
+        assert_eq!(summary.fallback_used, Some(true));
+        assert_eq!(summary.validation_error_count, Some(5));
+        assert_eq!(
+            summary.validation_errors_brief.len(),
+            PARSE_FAILURE_BRIEF_LIMIT,
+            "brief list should be capped",
+        );
+        assert_eq!(
+            summary.raw_response_path.as_deref(),
+            Some("/runs/abc/model-response.md")
+        );
+    }
+
+    #[test]
+    fn render_parse_failure_card_surfaces_fence_error_above_validation_noise() {
+        // Regression for #69 ergonomics: when the fence parses-but-fails and
+        // the fallback substitutes, the user must see the fence parse error
+        // before the misleading "X required fields missing" list. Otherwise
+        // they debug the wrong end of the pipeline.
+        let data = RunsShowData {
+            run_id: "20260518-235325-af0d".to_string(),
+            kind: "run.review".to_string(),
+            started_at: Some("2026-05-18T23:53:25Z".to_string()),
+            ok: Some(false),
+            error_code: Some("output_invalid".to_string()),
+            disposition: "unscored".to_string(),
+            card: ApprenticeCard {
+                apprentice_model: Some("google/gemma-4-26b-a4b".to_string()),
+                confidence: None,
+                useful_finding: None,
+                rejected_claim: None,
+                recommended_next: None,
+            },
+            parsed_output_path: None,
+            envelope_path: None,
+            source: "ledger",
+            rejected: false,
+            parse_failure: Some(ParseFailureSummary {
+                fence_parse_error: Some("expected `,` or `}` at line 9 column 25".to_string()),
+                parse_error: None,
+                extraction: Some("fallback".to_string()),
+                fallback_used: Some(true),
+                validation_error_count: Some(5),
+                validation_errors_brief: vec![
+                    "\"assumptions\" is a required property".to_string(),
+                    "\"confidence\" is a required property".to_string(),
+                    "\"risks\" is a required property".to_string(),
+                ],
+                raw_response_path: Some("/runs/20260518-235325-af0d/model-response.md".to_string()),
+            }),
+        };
+
+        let rendered = render_apprentice_card_human(&data);
+
+        // The fence parse error must appear in the rendered output.
+        assert!(
+            rendered.contains("expected `,` or `}` at line 9 column 25"),
+            "fence parse error missing from rendered card: {rendered}"
+        );
+        // And it must appear BEFORE the validation errors block — that's
+        // the whole point of pulling it out.
+        let fence_idx = rendered
+            .find("expected `,` or `}`")
+            .expect("fence error present");
+        let validation_idx = rendered
+            .find("Validation errors")
+            .expect("validation block present");
+        assert!(
+            fence_idx < validation_idx,
+            "fence error must precede validation block; got order fence={fence_idx} validation={validation_idx}"
+        );
+        // The note about substitution must appear so users don't chase the
+        // validation errors as the real bug.
+        assert!(
+            rendered.contains("fallback substituted"),
+            "substitution note missing: {rendered}"
+        );
+        // The raw response path must be reachable from the card.
+        assert!(
+            rendered.contains("model-response.md"),
+            "raw response path missing: {rendered}"
+        );
+        // The card must not display the success-path "Useful finding" /
+        // "Rejected claim" / "Recommended next" sections — they imply the
+        // run succeeded.
+        assert!(
+            !rendered.contains("Useful finding:"),
+            "failure card should not include success sections"
+        );
+    }
+
+    #[test]
+    fn render_parse_failure_card_handles_no_fence_case() {
+        // When no JSON object could be extracted at all (no fence, no
+        // balanced object), there's no fence_parse_error — only a
+        // top-level parse_error. The card should still label the cause.
+        let data = RunsShowData {
+            run_id: "test".to_string(),
+            kind: "run.review".to_string(),
+            started_at: None,
+            ok: Some(false),
+            error_code: Some("output_invalid".to_string()),
+            disposition: "unscored".to_string(),
+            card: ApprenticeCard {
+                apprentice_model: None,
+                confidence: None,
+                useful_finding: None,
+                rejected_claim: None,
+                recommended_next: None,
+            },
+            parsed_output_path: None,
+            envelope_path: None,
+            source: "ledger",
+            rejected: false,
+            parse_failure: Some(ParseFailureSummary {
+                fence_parse_error: None,
+                parse_error: Some("no parseable JSON object found in model response".to_string()),
+                extraction: Some("fallback".to_string()),
+                fallback_used: None,
+                validation_error_count: None,
+                validation_errors_brief: Vec::new(),
+                raw_response_path: Some("/runs/test/model-response.md".to_string()),
+            }),
+        };
+
+        let rendered = render_apprentice_card_human(&data);
+        assert!(rendered.contains("no parseable JSON object found"));
+        assert!(!rendered.contains("Validation errors"));
+        assert!(rendered.contains("model-response.md"));
     }
 
     #[test]
