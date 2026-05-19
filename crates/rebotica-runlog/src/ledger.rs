@@ -148,6 +148,11 @@ impl EventType {
 
 /// Logical input shape an event describes. One variant per MCP tool (when
 /// MCP lands in #45) plus one per CLI `run.*` mode.
+///
+/// The `*_Freeform` variants tag runs invoked with `--no-schema`: their
+/// envelope kind is suffixed `.freeform` and they bypass extraction and
+/// validation entirely. Keeping them as distinct shapes lets per-mode
+/// aggregations (#66) avoid mixing structured and freeform corpora.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvelopeShape {
@@ -159,6 +164,10 @@ pub enum EnvelopeShape {
     RunTests,
     RunExplain,
     RunPatch,
+    RunReviewFreeform,
+    RunTestsFreeform,
+    RunExplainFreeform,
+    RunPatchFreeform,
 }
 
 impl EnvelopeShape {
@@ -172,16 +181,25 @@ impl EnvelopeShape {
             Self::RunTests => "run_tests",
             Self::RunExplain => "run_explain",
             Self::RunPatch => "run_patch",
+            Self::RunReviewFreeform => "run_review_freeform",
+            Self::RunTestsFreeform => "run_tests_freeform",
+            Self::RunExplainFreeform => "run_explain_freeform",
+            Self::RunPatchFreeform => "run_patch_freeform",
         }
     }
 
     /// Map a `run.*` envelope kind (e.g. `"run.review"`) to its shape.
+    /// Recognises the `.freeform` suffix that `--no-schema` runs carry.
     pub fn from_run_kind(kind: &str) -> Option<Self> {
         match kind {
             "run.review" => Some(Self::RunReview),
             "run.tests" => Some(Self::RunTests),
             "run.explain" => Some(Self::RunExplain),
             "run.patch" => Some(Self::RunPatch),
+            "run.review.freeform" => Some(Self::RunReviewFreeform),
+            "run.tests.freeform" => Some(Self::RunTestsFreeform),
+            "run.explain.freeform" => Some(Self::RunExplainFreeform),
+            "run.patch.freeform" => Some(Self::RunPatchFreeform),
             _ => None,
         }
     }
@@ -642,6 +660,41 @@ mod tests {
                 .unwrap();
             assert_eq!(exists, 1, "view {view} should exist");
         }
+    }
+
+    #[test]
+    fn envelope_shape_recognises_freeform_kinds() {
+        // `--no-schema` runs (#66) carry `.freeform`-suffixed kinds. The
+        // ledger must distinguish them from structured runs so per-mode
+        // aggregations don't mix corpora.
+        assert_eq!(
+            EnvelopeShape::from_run_kind("run.review.freeform"),
+            Some(EnvelopeShape::RunReviewFreeform)
+        );
+        assert_eq!(
+            EnvelopeShape::from_run_kind("run.tests.freeform"),
+            Some(EnvelopeShape::RunTestsFreeform)
+        );
+        assert_eq!(
+            EnvelopeShape::from_run_kind("run.explain.freeform"),
+            Some(EnvelopeShape::RunExplainFreeform)
+        );
+        assert_eq!(
+            EnvelopeShape::from_run_kind("run.patch.freeform"),
+            Some(EnvelopeShape::RunPatchFreeform)
+        );
+        // Structured kinds are unchanged.
+        assert_eq!(
+            EnvelopeShape::from_run_kind("run.review"),
+            Some(EnvelopeShape::RunReview)
+        );
+        // Unknown suffix does not match.
+        assert_eq!(EnvelopeShape::from_run_kind("run.review.bogus"), None);
+        // Round-trip through as_str must be stable.
+        assert_eq!(
+            EnvelopeShape::RunReviewFreeform.as_str(),
+            "run_review_freeform"
+        );
     }
 
     #[test]
