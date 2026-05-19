@@ -323,13 +323,20 @@ pub async fn dispatch(
 
     let _ = rebotica_runlog::write_model_response(&persisted, &raw);
 
+    let raw_response_path = persisted
+        .directory
+        .join("model-response.md")
+        .display()
+        .to_string();
+
     let extracted = match extract_json_payload(&raw) {
         Ok(extracted) => extracted,
         Err(error) => {
             let details = serde_json::json!({
                 "mode": plugin.mode,
                 "parse_error": error.parse_error,
-                "extraction": error.extraction.as_str()
+                "extraction": error.extraction.as_str(),
+                "raw_response_path": raw_response_path,
             });
             let _ = rebotica_runlog::write_parse_failure(&persisted, &details);
             emit_run_completed_event(
@@ -351,7 +358,10 @@ pub async fn dispatch(
                 run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::OutputInvalid,
-                message: "model output did not contain schema-valid JSON".to_string(),
+                message: format!(
+                    "model output did not contain parseable JSON ({}): see model-response.md",
+                    error.parse_error
+                ),
                 details: Some(details),
                 broken_layers,
             });
@@ -420,11 +430,16 @@ pub async fn dispatch(
     };
 
     if !validation_errors.is_empty() {
-        let details = serde_json::json!({
+        let mut details = serde_json::json!({
             "mode": plugin.mode,
             "extraction": extracted.extraction.as_str(),
-            "validation_errors": validation_errors
+            "fallback_used": extracted.fallback_used,
+            "validation_errors": validation_errors,
+            "raw_response_path": raw_response_path,
         });
+        if let Some(fence_error) = extracted.fence_parse_error.as_deref() {
+            details["fence_parse_error"] = serde_json::Value::String(fence_error.to_string());
+        }
         let _ = rebotica_runlog::write_parse_failure(&persisted, &details);
         emit_run_completed_event(
             &persisted.id,
@@ -439,13 +454,21 @@ pub async fn dispatch(
             apprentice_completion_tokens,
             None,
         );
+        let message = match extracted.fence_parse_error.as_deref() {
+            Some(fence_error) => format!(
+                "model fence content failed to parse ({}); fallback substituted a different \
+                 sub-object that does not match the schema. See model-response.md",
+                fence_error
+            ),
+            None => "model output failed schema validation".to_string(),
+        };
         let run_id = Some(persisted.id.clone());
         return RunOutcome::Failure(RunFailure {
             run: Some(persisted),
             run_id,
             kind: plugin.manifest.kind.clone(),
             code: ErrorCode::OutputInvalid,
-            message: "model output failed schema validation".to_string(),
+            message,
             details: Some(details),
             broken_layers,
         });
