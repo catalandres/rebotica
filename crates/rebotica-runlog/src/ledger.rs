@@ -239,6 +239,23 @@ pub struct RunCompletedPayload {
     pub hallucination_rate: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<u8>,
+    /// Apprentice-side `usage.prompt_tokens` reported by the provider
+    /// (e.g. LM Studio). `None` when the provider does not report `usage`
+    /// or when the run failed before any provider response arrived.
+    /// Together with `apprentice_completion_tokens`, this is the exact
+    /// local-model cost — the denominator for net-savings analyses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apprentice_prompt_tokens: Option<u64>,
+    /// Apprentice-side `usage.completion_tokens`. See
+    /// `apprentice_prompt_tokens` for semantics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apprentice_completion_tokens: Option<u64>,
+    /// Byte length of the `data` field returned to Prime (the structured
+    /// envelope payload). Proxy for Prime's roundtrip context cost
+    /// (~bytes/4 tokens). `None` when the run failed before a parsed
+    /// envelope existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub envelope_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -682,6 +699,9 @@ mod tests {
                     output_bytes: Some(256),
                     hallucination_rate: None,
                     confidence: Some(confidence),
+                    apprentice_prompt_tokens: None,
+                    apprentice_completion_tokens: None,
+                    envelope_bytes: None,
                 }),
             )
             .unwrap();

@@ -161,12 +161,28 @@ fn one_shot_models_status_server(status: u16, body: &str) -> String {
 }
 
 fn one_shot_chat_server(response_text: &str) -> String {
+    one_shot_chat_server_with_usage(response_text, None)
+}
+
+/// Like `one_shot_chat_server` but also embeds an OpenAI-style `usage`
+/// block in the response, so tests can verify token-accounting capture
+/// through the dispatch pipeline into the ledger row.
+fn one_shot_chat_server_with_usage(
+    response_text: &str,
+    usage: Option<(u64, u64)>,
+) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let addr = listener
         .local_addr()
         .expect("test server addr should resolve");
+    let usage_fragment = match usage {
+        Some((prompt, completion)) => format!(
+            r#","usage":{{"prompt_tokens":{prompt},"completion_tokens":{completion}}}"#
+        ),
+        None => String::new(),
+    };
     let body = format!(
-        r#"{{"choices":[{{"message":{{"content":{}}}}}]}}"#,
+        r#"{{"choices":[{{"message":{{"content":{}}}}}]{usage_fragment}}}"#,
         serde_json::to_string(response_text).unwrap()
     );
     thread::spawn(move || {
@@ -2122,4 +2138,126 @@ fn compare_with_comma_separated_models_expands_correctly() {
     assert_eq!(models.len(), 2);
     assert_eq!(models[0]["model"], "alpha");
     assert_eq!(models[1]["model"], "beta");
+}
+
+/// Read the most recent `run_completed` payload for `run_id` out of the
+/// ledger db rooted at `home/.rebotica/`. Opens SQLite directly rather
+/// than going through the runlog crate's `root()` helper, because that
+/// helper consults `HOME` from the test thread's environment — which
+/// would race with parallel tests.
+fn read_run_completed_payload(home: &Path, run_id: &str) -> Value {
+    let ledger_path = home.join(".rebotica/ledger.db");
+    let conn = rusqlite::Connection::open(&ledger_path).expect("open ledger db");
+    let payload_json: String = conn
+        .query_row(
+            "SELECT payload_json FROM ledger_events \
+             WHERE run_id = ?1 AND event_type = 'run_completed' \
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![run_id],
+            |row| row.get(0),
+        )
+        .expect("run_completed row should exist for run_id");
+    serde_json::from_str(&payload_json).expect("payload should be valid JSON")
+}
+
+#[test]
+fn run_review_captures_apprentice_usage_and_envelope_bytes_in_ledger() {
+    let temp = TempDir::new("usage-capture");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+
+    let response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 7,
+        "risks": [],
+        "next_action": "Prime should review.",
+        "findings": []
+    }));
+    // Provider reports 1234 prompt tokens and 567 completion tokens —
+    // distinct, recognisable numbers so the assertion is unambiguous.
+    let base_url = one_shot_chat_server_with_usage(&response, Some((1234, 567)));
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(
+        output.status.success(),
+        "run review failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let run_id = json["run_id"].as_str().expect("run_id should be set");
+
+    // Read the run_completed event directly from the ledger db and assert
+    // the new fields landed verbatim. Querying the SQLite db is the
+    // strongest possible check that the metrics threaded through.
+    let payload: Value = read_run_completed_payload(&home, run_id);
+
+    assert_eq!(payload["apprentice_prompt_tokens"], 1234);
+    assert_eq!(payload["apprentice_completion_tokens"], 567);
+    let envelope_bytes = payload["envelope_bytes"]
+        .as_u64()
+        .expect("envelope_bytes present");
+    assert!(
+        envelope_bytes > 20,
+        "envelope_bytes implausibly small: {envelope_bytes}"
+    );
+}
+
+#[test]
+fn run_review_omits_usage_when_provider_reports_no_usage_block() {
+    let temp = TempDir::new("usage-absent");
+    init_git_repo(temp.path());
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+
+    let response = fenced_json(serde_json::json!({
+        "assumptions": [],
+        "confidence": 6,
+        "risks": [],
+        "next_action": "ok",
+        "findings": []
+    }));
+    // No usage block — exercises the `Option::None` codepath for
+    // providers (or proxies) that strip `usage` from the response.
+    let base_url = one_shot_chat_server(&response);
+
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json",
+            "run",
+            "review",
+            "--base-url",
+            &base_url,
+            "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let run_id = json["run_id"].as_str().expect("run_id should be set");
+
+    let payload: Value = read_run_completed_payload(&home, run_id);
+
+    // Token fields elided via `skip_serializing_if = Option::is_none`.
+    // envelope_bytes is still present because it's computed locally from
+    // the parsed value, not reported by the provider.
+    assert!(payload.get("apprentice_prompt_tokens").is_none());
+    assert!(payload.get("apprentice_completion_tokens").is_none());
+    assert!(payload["envelope_bytes"].as_u64().unwrap() > 0);
 }
