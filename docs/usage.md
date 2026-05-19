@@ -348,3 +348,19 @@ Dynamic mode help comes from the registry:
 rbtc run review --help
 rbtc run patch --help
 ```
+
+### Comparing models
+
+`rbtc compare <mode> --model A --model B [-- adapter args]` runs the same
+work across multiple models sequentially and emits a single `compare.<mode>`
+envelope with one summary row per model. Each model dispatch persists its
+own run directory and ledger rows; `compare` aggregates on top.
+
+```sh
+rbtc compare review --model qwen3-coder-next --model gemma-4-26b-a4b
+rbtc compare tests --model alpha,beta -- src/lib.rs
+```
+
+Comma-separated and repeated `--model` flags are both accepted. Parallel
+execution is tracked in
+[#4](https://github.com/catalandres/rebotica/issues/4).

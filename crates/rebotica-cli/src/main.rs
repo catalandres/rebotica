@@ -81,6 +81,8 @@ enum Command {
     Skills(SkillsArgs),
     #[command(about = "Run delegated local-model work modes.")]
     Run(RunArgs),
+    #[command(about = "Run the same delegated work across multiple models and emit a side-by-side comparison.")]
+    Compare(CompareArgs),
     #[command(about = "List and inspect recent delegated runs.")]
     Runs(RunsArgs),
     #[command(about = "Serve apprentice tools over MCP for Prime agents (Claude Code, Codex).")]
@@ -242,6 +244,22 @@ struct SkillsShowArgs {
 struct RunArgs {
     #[arg(value_name = "MODE", help = "Run mode resolved from runs.d plugins.")]
     mode: String,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    adapter_args: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+#[command(disable_help_flag = true)]
+struct CompareArgs {
+    #[arg(value_name = "MODE", help = "Run mode resolved from runs.d plugins.")]
+    mode: String,
+    #[arg(
+        long = "model",
+        value_name = "MODEL",
+        required = true,
+        help = "Models to compare. Pass --model repeatedly (e.g. --model qwen --model gemma) or once with a comma-separated list."
+    )]
+    models: Vec<String>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     adapter_args: Vec<String>,
 }
@@ -650,6 +668,7 @@ async fn run(cli: Cli, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -
             )
         }
         Command::Run(args) => run_plugin(args, reporter_mode, started_at).await,
+        Command::Compare(args) => compare_runs(args, reporter_mode, started_at).await,
         Command::Runs(args) => {
             let (kind, command) = match &args.command {
                 RunsCommand::List(_) => ("runs.list", "runs list"),
@@ -757,6 +776,7 @@ fn command_path(cli: &Cli) -> String {
             SkillsCommand::Show(_) => "skills show",
         },
         Some(Command::Run(args)) => return format!("run {}", args.mode),
+        Some(Command::Compare(args)) => return format!("compare {}", args.mode),
         Some(Command::Runs(args)) => match &args.command {
             RunsCommand::List(_) => "runs list",
             RunsCommand::Show(_) => "runs show",
@@ -957,6 +977,185 @@ async fn run_plugin(
     handle_run_outcome(outcome, reporter_mode, started_at, &command)
 }
 
+async fn compare_runs(
+    args: CompareArgs,
+    reporter_mode: ReporterMode,
+    started_at: DateTime<Utc>,
+) -> Result<i32> {
+    let cwd = std::env::current_dir()?;
+    let registry = load_run_registry(&cwd)?;
+    let mut reporter = Reporter::from_mode(reporter_mode);
+
+    let models = expand_compare_models(&args.models);
+    if models.is_empty() {
+        return Err(coded_error(
+            ErrorCode::Usage,
+            "compare requires at least one --model value".to_string(),
+        ));
+    }
+    if models.len() < 2 && reporter_mode != ReporterMode::Quiet {
+        eprintln!(
+            "note: compare with a single model runs the mode once; usually you want two or more --model values."
+        );
+    }
+
+    let command = format!("compare {}", args.mode);
+    let mut entries = Vec::with_capacity(models.len());
+
+    for (idx, model) in models.iter().enumerate() {
+        if reporter_mode != ReporterMode::Quiet {
+            eprintln!(
+                "compare [{}/{}]: dispatching {} against {model}",
+                idx + 1,
+                models.len(),
+                args.mode,
+            );
+        }
+        let model_started = Utc::now();
+        let mut adapter_args = Vec::with_capacity(args.adapter_args.len() + 2);
+        adapter_args.push("--model".to_string());
+        adapter_args.push(model.clone());
+        adapter_args.extend(args.adapter_args.iter().cloned());
+
+        let request = rebotica_run::RunRequest {
+            mode: args.mode.clone(),
+            adapter_args,
+            command: format!("compare {} --model {model}", args.mode),
+        };
+        let outcome = rebotica_run::dispatch(&registry, &cwd, request, model_started).await;
+        let duration_ms = (Utc::now() - model_started).num_milliseconds().max(0) as u64;
+        entries.push(summarize_compare_entry(model.clone(), outcome, duration_ms));
+    }
+
+    let data = CompareData {
+        mode: args.mode.clone(),
+        models: entries,
+    };
+
+    if reporter.is_json() {
+        let kind = format!("compare.{}", args.mode);
+        let envelope = Envelope::builder(&kind)
+            .command(&command)
+            .started_at(started_at)
+            .data(&data)
+            .build();
+        reporter.emit(&envelope)?;
+    } else {
+        reporter.human(&render_compare_table(&data))?;
+    }
+    Ok(0)
+}
+
+fn expand_compare_models(raw: &[String]) -> Vec<String> {
+    raw.iter()
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn summarize_compare_entry(
+    model: String,
+    outcome: RunOutcome,
+    duration_ms: u64,
+) -> CompareEntry {
+    match outcome {
+        RunOutcome::Success(success) => {
+            let confidence = success
+                .data
+                .get("confidence")
+                .and_then(|v| v.as_u64())
+                .filter(|v| *v <= CONFIDENCE_MAX)
+                .map(|v| v as u8);
+            let n_findings = compare_finding_count(&success.kind, &success.data);
+            CompareEntry {
+                model,
+                run_id: Some(success.run.id.clone()),
+                ok: true,
+                error_code: None,
+                confidence,
+                n_findings,
+                duration_ms,
+            }
+        }
+        RunOutcome::Failure(failure) => CompareEntry {
+            model,
+            run_id: failure.run_id,
+            ok: false,
+            error_code: Some(failure.code.as_str().to_string()),
+            confidence: None,
+            n_findings: None,
+            duration_ms,
+        },
+    }
+}
+
+/// Count the natural "findings" array for the given mode's envelope kind.
+/// Returns `None` for kinds that don't carry a findings-like list.
+fn compare_finding_count(kind: &str, data: &serde_json::Value) -> Option<usize> {
+    let field = match kind {
+        "run.review" => "findings",
+        "run.tests" => "proposed_tests",
+        // explain has no list; patch has files_touched but it's not findings
+        _ => return None,
+    };
+    data.get(field).and_then(|v| v.as_array()).map(|a| a.len())
+}
+
+fn render_compare_table(data: &CompareData) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  {:24} {:5} {:12} {:5} {:8} {:>8}  {}\n",
+        "model", "ok", "code", "conf", "findings", "ms", "run_id"
+    ));
+    out.push_str(&format!(
+        "  {:24} {:5} {:12} {:5} {:8} {:>8}  {}\n",
+        "-----", "--", "----", "----", "--------", "--", "------"
+    ));
+    for entry in &data.models {
+        let ok = if entry.ok { "ok  " } else { "FAIL" };
+        let code = entry.error_code.as_deref().unwrap_or("-");
+        let conf = entry
+            .confidence
+            .map(|c| format!("{c}"))
+            .unwrap_or_else(|| "-".to_string());
+        let n = entry
+            .n_findings
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let run_id = entry.run_id.as_deref().unwrap_or("(none)");
+        out.push_str(&format!(
+            "  {:24} {:5} {:12} {:5} {:8} {:>8}  {}\n",
+            entry.model, ok, code, conf, n, entry.duration_ms, run_id,
+        ));
+    }
+    out.push_str(&format!(
+        "\n  See per-model envelopes in {}\n",
+        rebotica_runlog::runs_root().display(),
+    ));
+    out
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CompareData {
+    mode: String,
+    models: Vec<CompareEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CompareEntry {
+    model: String,
+    /// `None` only if both persistence and ledger writes failed; otherwise
+    /// the per-model run id (success run dir or rejection ledger row).
+    run_id: Option<String>,
+    ok: bool,
+    error_code: Option<String>,
+    confidence: Option<u8>,
+    n_findings: Option<usize>,
+    duration_ms: u64,
+}
+
 fn handle_run_outcome(
     outcome: RunOutcome,
     reporter_mode: ReporterMode,
@@ -1014,8 +1213,8 @@ fn handle_run_outcome(
                         message: failure.message.clone(),
                         details: failure.details,
                     });
-                if let Some(run) = &failure.run {
-                    builder = builder.run_id(run.id.as_str());
+                if let Some(id) = failure.run_id.as_deref() {
+                    builder = builder.run_id(id);
                 }
                 let envelope = builder.build();
                 if let Some(run) = &failure.run {
@@ -2368,6 +2567,9 @@ struct RunsListEntry {
     duration_ms: Option<u64>,
     disposition: String,
     source: &'static str,
+    /// `true` for pre-persistence rejections (over_limit, guard_rejected,
+    /// missing model, config errors). These rows have no `run_dir` on disk.
+    rejected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2399,6 +2601,10 @@ struct RunsShowData {
     parsed_output_path: Option<String>,
     envelope_path: Option<String>,
     source: &'static str,
+    /// `true` for pre-persistence rejections — no run directory exists,
+    /// so on-disk fields are `None` and the card is unpopulated.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    rejected: bool,
 }
 
 fn runs(args: RunsArgs, reporter_mode: ReporterMode, started_at: DateTime<Utc>) -> Result<i32> {
@@ -2433,6 +2639,7 @@ fn runs_list(
             duration_ms: s.duration_ms,
             disposition: s.disposition.as_str().to_string(),
             source: "ledger",
+            rejected: s.rejected,
         })
         .collect::<Vec<_>>();
 
@@ -2460,10 +2667,14 @@ fn runs_list(
         ))?;
         for entry in &data.runs {
             let model = entry.model.as_deref().unwrap_or("?");
-            let ok = match entry.ok {
-                Some(true) => "ok  ",
-                Some(false) => "FAIL",
-                None => "?   ",
+            let ok = if entry.rejected {
+                "REJ "
+            } else {
+                match entry.ok {
+                    Some(true) => "ok  ",
+                    Some(false) => "FAIL",
+                    None => "?   ",
+                }
             };
             let ts = entry.started_at.as_deref().unwrap_or("");
             reporter.human(&format!(
@@ -2482,15 +2693,17 @@ fn runs_show(
 ) -> Result<i32> {
     let mut reporter = Reporter::from_mode(reporter_mode);
     let run_dir = rebotica_runlog::runs_root().join(&args.run_id);
-    if !run_dir.exists() {
+    let summary = rebotica_runlog::ledger::run_summary(&args.run_id)
+        .context("failed to read ledger summary")?;
+
+    // Pre-persistence rejections have a ledger row but no run directory.
+    // Anything else missing on both sides is genuinely unknown.
+    if !run_dir.exists() && !summary.as_ref().is_some_and(|s| s.rejected) {
         return Err(coded_error(
             ErrorCode::Usage,
             format!("run not found: {}", args.run_id),
         ));
     }
-
-    let summary = rebotica_runlog::ledger::run_summary(&args.run_id)
-        .context("failed to read ledger summary")?;
 
     let parsed_output_path = run_dir.join("parsed-output.json");
     let envelope_path = run_dir.join("envelope.json");
@@ -2539,6 +2752,7 @@ fn runs_show(
             .exists()
             .then(|| envelope_path.display().to_string()),
         source,
+        rejected: summary.as_ref().is_some_and(|s| s.rejected),
     };
 
     if reporter.is_json() {
@@ -2678,6 +2892,9 @@ fn first_sentence(text: &str) -> &str {
 }
 
 fn render_apprentice_card_human(data: &RunsShowData) -> String {
+    if data.rejected {
+        return render_rejection_card_human(data);
+    }
     let model = data.card.apprentice_model.as_deref().unwrap_or("(unknown)");
     let confidence = data
         .card
@@ -2739,6 +2956,25 @@ fn render_apprentice_card_human(data: &RunsShowData) -> String {
     if let Some(path) = &data.envelope_path {
         out.push_str(&format!("\n envelope:      {path}"));
     }
+    out
+}
+
+fn render_rejection_card_human(data: &RunsShowData) -> String {
+    let ts = data.started_at.as_deref().unwrap_or("(unknown)");
+    let code = data.error_code.as_deref().unwrap_or("(unknown)");
+    let mut out = String::new();
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(" REJECTED dispatch (no apprentice was invoked)\n");
+    out.push_str(&format!(" Kind:       {:30}  ran: {ts}\n", data.kind));
+    out.push_str(&format!(
+        " Run ID:     {:30}  error_code: {code}\n",
+        data.run_id,
+    ));
+    out.push_str("═══════════════════════════════════════════════════════════\n");
+    out.push_str(&format!(" source: {}\n", data.source));
+    out.push_str(
+        " (rejections record the why in the ledger row; no run directory exists.)\n",
+    );
     out
 }
 

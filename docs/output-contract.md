@@ -128,6 +128,7 @@ These kinds are emitted today:
 | `run.explain` | `rbtc run explain` | Schema-validated analysis for selected files. |
 | `run.tests` | `rbtc run tests` | Schema-validated proposed tests for selected files. |
 | `run.patch` | `rbtc run patch` | Schema-validated patch proposal and touched files. |
+| `compare.<mode>` | `rbtc compare <mode> --model A --model B` | Per-model summary rows aggregating an N-way run against the same input. See [Comparison runs](#comparison-runs). |
 
 For the canonical `data` field shape of each kind, the source struct in `crates/rebotica-cli/src/main.rs` is authoritative. A consumer that wants to be forward-compatible should read only the fields it needs and ignore unknown ones.
 
@@ -181,7 +182,7 @@ CREATE TABLE ledger_events (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           TEXT    NOT NULL,           -- RFC 3339 UTC
     run_id       TEXT,                       -- nullable; null for non-run events
-    event_type   TEXT    NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded
+    event_type   TEXT    NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded | run_rejected
     payload_json TEXT    NOT NULL            -- typed payload, shape per event_type
 );
 ```
@@ -252,6 +253,24 @@ The ledger's `EnvelopeShape` enum also reserves `review_diff`, `propose_tests`, 
 { "axis": "diff_review", "score": 4 }
 ```
 
+`run_rejected` (added in #59) — emitted when a dispatch attempt fails before
+allocating a persisted run (e.g. `over_limit`, `guard_rejected`, missing model,
+config errors). It has no matching `run_started` / `run_completed` pair, but it
+does carry a `run_id` so callers can pivot to `rbtc runs show <id>`:
+
+```json
+{
+  "kind": "run.review",
+  "error_code": "over_limit",
+  "message": "diff exceeds 50000 lines",
+  "details": { "lines": 60000 }
+}
+```
+
+`kind` falls back to `"run"` when the rejection happened before plugin
+resolution. `error_code` is the snake_case `ErrorCode` name. `details` is
+optional and shape varies by failure mode.
+
 ### Derived views
 
 The schema ships three SQL views that aggregate `ledger_events` for ad-hoc inspection and for `rbtc runs show` (#18):
@@ -261,6 +280,55 @@ The schema ships three SQL views that aggregate `ledger_events` for ad-hoc inspe
 - `v_disposition_breakdown` — per `disposition`: `rows_count`.
 
 These are SQL views, not materialized tables; they always reflect the current contents of `ledger_events`.
+
+## Comparison runs
+
+`rbtc compare <mode> --model A --model B [-- adapter args]` dispatches the
+same `run.<mode>` work against each model sequentially and emits a single
+`compare.<mode>` envelope that aggregates the per-model outcomes. Each model
+call goes through the normal `dispatch` path, so each one persists its own
+run directory, ledger rows, and `run_id` — `compare` adds the aggregation on
+top, it does not replace per-run persistence.
+
+Default is sequential. Parallel execution (`--parallel`/`--jobs`) is the
+follow-up tracked in [#4](https://github.com/catalandres/rebotica/issues/4).
+
+`data` shape:
+
+```json
+{
+  "mode": "review",
+  "models": [
+    {
+      "model": "qwen3-coder-next",
+      "run_id": "20260518-201500-abcd",
+      "ok": true,
+      "error_code": null,
+      "confidence": 8,
+      "n_findings": 3,
+      "duration_ms": 12345
+    },
+    {
+      "model": "gemma-4-26b-a4b",
+      "run_id": "20260518-201600-efgh",
+      "ok": false,
+      "error_code": "output_invalid",
+      "confidence": null,
+      "n_findings": null,
+      "duration_ms": 9876
+    }
+  ]
+}
+```
+
+`n_findings` counts the natural list field for each mode (`findings` for
+`review`, `proposed_tests` for `tests`) and is `null` for modes that have
+no such list (`explain`, `patch`). `run_id` is `null` only if both
+persistence and the rejection ledger write failed catastrophically.
+
+`compare` does not auto-score the per-model runs. Prime calls
+`rbtc score <run_id> --disposition ...` against each row, same as for
+single-model runs.
 
 ## Reserved kinds
 

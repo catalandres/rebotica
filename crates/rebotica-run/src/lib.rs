@@ -53,6 +53,12 @@ pub struct RunSuccess {
 pub struct RunFailure {
     /// `Some` if the run was allocated before the failure occurred.
     pub run: Option<rebotica_runlog::PersistedRun>,
+    /// The ledger `run_id` for this failure. Populated either from the
+    /// persisted run (when `run.is_some()`), or from a fresh
+    /// `run_rejected` ledger event when the failure happened before
+    /// run allocation. `None` only if both persistence and ledger
+    /// write failed catastrophically.
+    pub run_id: Option<String>,
     /// Best-effort kind (e.g. `"run.review"`) or `"run"` for pre-resolution failures.
     pub kind: String,
     pub code: ErrorCode,
@@ -60,6 +66,30 @@ pub struct RunFailure {
     pub details: Option<serde_json::Value>,
     /// Broken plugin layers surfaced during mode resolution.
     pub broken_layers: Vec<rebotica_core::run::BrokenPluginLayer>,
+}
+
+/// Record a pre-persistence rejection in the ledger and return its `run_id`.
+///
+/// Used by dispatch sites that fail before a `PersistedRun` is allocated –
+/// these failures would otherwise leave no ledger trail. Returns `None` only
+/// when the ledger write itself catastrophically failed.
+fn record_rejection(
+    kind: &str,
+    code: ErrorCode,
+    message: &str,
+    details: Option<serde_json::Value>,
+) -> Option<String> {
+    let id = rebotica_runlog::ledger::record_rejection(rebotica_runlog::ledger::RunRejectedPayload {
+        kind: kind.to_string(),
+        error_code: code.as_str().to_string(),
+        message: message.to_string(),
+        details,
+    });
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
 }
 
 /// Dispatch a run request against the given registry.
@@ -90,11 +120,14 @@ pub async fn dispatch(
                 ),
                 RunError::InvalidPlugin { .. } => (Vec::new(), None),
             };
+            let message = error.to_string();
+            let run_id = record_rejection("run", ErrorCode::Usage, &message, details.clone());
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: "run".to_string(),
                 code: ErrorCode::Usage,
-                message: error.to_string(),
+                message,
                 details,
                 broken_layers,
             });
@@ -106,8 +139,15 @@ pub async fn dispatch(
     let assembled = match assemble_run(cwd, plugin, request.adapter_args) {
         Ok(assembled) => assembled,
         Err(error) => {
+            let run_id = record_rejection(
+                &plugin.manifest.kind,
+                error.code,
+                &error.message,
+                error.details.clone(),
+            );
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: error.code,
                 message: error.message,
@@ -120,11 +160,14 @@ pub async fn dispatch(
     let loaded = match LoadedConfig::read_from(cwd) {
         Ok(loaded) => loaded,
         Err(error) => {
+            let message = format!("{error:#}");
+            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Config,
-                message: format!("{error:#}"),
+                message,
                 details: None,
                 broken_layers,
             });
@@ -135,11 +178,14 @@ pub async fn dispatch(
     let model = match resolve_model(&loaded, worker_mode, assembled.options.model.clone()) {
         Ok(model) => model,
         Err(error) => {
+            let message = error.to_string();
+            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Config,
-                message: error.to_string(),
+                message,
                 details: None,
                 broken_layers,
             });
@@ -149,11 +195,14 @@ pub async fn dispatch(
     let settings = match provider_settings(&loaded, assembled.options.provider.clone()) {
         Ok(settings) => settings,
         Err(error) => {
+            let message = error.to_string();
+            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Config,
-                message: error.to_string(),
+                message,
                 details: None,
                 broken_layers,
             });
@@ -163,11 +212,14 @@ pub async fn dispatch(
     let provider = match OpenAICompatibleProvider::new(&settings) {
         Ok(provider) => provider,
         Err(error) => {
+            let message = error.to_string();
+            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Config,
-                message: error.to_string(),
+                message,
                 details: None,
                 broken_layers,
             });
@@ -182,11 +234,15 @@ pub async fn dispatch(
     ) {
         Ok(persisted) => persisted,
         Err(error) => {
+            let message = format!("failed to create run log: {error:#}");
+            let run_id =
+                record_rejection(&plugin.manifest.kind, ErrorCode::Internal, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Internal,
-                message: format!("failed to create run log: {error:#}"),
+                message,
                 details: None,
                 broken_layers,
             });
@@ -194,8 +250,10 @@ pub async fn dispatch(
     };
 
     if let Err(error) = persist_selected_skills(&persisted.directory, &assembled.selected_skills) {
+        let run_id = Some(persisted.id.clone());
         return RunOutcome::Failure(RunFailure {
             run: Some(persisted),
+            run_id,
             kind: plugin.manifest.kind.clone(),
             code: ErrorCode::Internal,
             message: format!("failed to persist selected skills: {error:#}"),
@@ -241,8 +299,10 @@ pub async fn dispatch(
                 None,
                 None,
             );
+            let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code,
                 message: error.to_string(),
@@ -273,8 +333,10 @@ pub async fn dispatch(
                 None,
                 None,
             );
+            let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::OutputInvalid,
                 message: "model output did not contain schema-valid JSON".to_string(),
@@ -300,8 +362,10 @@ pub async fn dispatch(
                 None,
                 None,
             );
+            let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Internal,
                 message: format!("failed to build schema validator: {error:#}"),
@@ -324,8 +388,10 @@ pub async fn dispatch(
                 None,
                 None,
             );
+            let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
+                run_id,
                 kind: plugin.manifest.kind.clone(),
                 code: ErrorCode::Internal,
                 message: format!("schema validation failed: {error:#}"),
@@ -352,8 +418,10 @@ pub async fn dispatch(
             None,
             None,
         );
+        let run_id = Some(persisted.id.clone());
         return RunOutcome::Failure(RunFailure {
             run: Some(persisted),
+            run_id,
             kind: plugin.manifest.kind.clone(),
             code: ErrorCode::OutputInvalid,
             message: "model output failed schema validation".to_string(),

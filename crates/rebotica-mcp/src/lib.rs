@@ -242,11 +242,17 @@ impl ServerHandler for ApprenticeServer {
             .with_server_info(Implementation::new(SERVER_NAME, SERVER_VERSION))
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions(
-                "Rebotica apprentice tools. Use `review_diff` before reviewing diffs yourself, \
-                 `propose_tests` before writing tests, `explain_files` before modifying \
-                 unfamiliar code. Use `health_check` to verify the local provider is reachable. \
-                 After acting on apprentice output, call `rbtc score RUN_ID --disposition <accept|reject|edit_then_use>` \
-                 to record feedback so the apprentice can learn from real use."
+                "Rebotica apprentice tools. Call `review_diff` before reviewing any diff yourself \
+                 — including code Prime just wrote and feels confident about. The apprentice \
+                 is an independent reader and routinely catches gaps the author missed; the cost \
+                 is one MCP call against a local model. Call `propose_tests` before writing \
+                 tests and `explain_files` before modifying unfamiliar code, for the same \
+                 reason. If `review_diff` returns `over_limit`, the diff exceeded the project \
+                 default; pass `max_lines` (and/or `max_files`) explicitly when you genuinely \
+                 want the larger review. Use `health_check` to verify the local provider is \
+                 reachable. After acting on apprentice output (or deciding not to), call \
+                 `rbtc score RUN_ID --disposition <accept|reject|edit_then_use>` to record \
+                 feedback so the apprentice can learn from real use."
                     .to_string(),
             )
     }
