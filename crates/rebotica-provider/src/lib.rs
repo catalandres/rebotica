@@ -210,7 +210,7 @@ impl OpenAICompatibleProvider {
         model: &str,
         messages: Vec<ChatMessage>,
         temperature: f64,
-    ) -> std::result::Result<String, ProviderError> {
+    ) -> std::result::Result<ChatCompletion, ProviderError> {
         let endpoint = "chat";
         let request = ChatRequest {
             model,
@@ -241,7 +241,16 @@ impl OpenAICompatibleProvider {
                     endpoint,
                     message: error.to_string(),
                 })?;
-        response
+        let usage = response.usage.and_then(|u| {
+            match (u.prompt_tokens, u.completion_tokens) {
+                (Some(prompt_tokens), Some(completion_tokens)) => Some(ChatUsage {
+                    prompt_tokens,
+                    completion_tokens,
+                }),
+                _ => None,
+            }
+        });
+        let content = response
             .choices
             .into_iter()
             .next()
@@ -249,8 +258,26 @@ impl OpenAICompatibleProvider {
             .ok_or_else(|| ProviderError::InvalidResponse {
                 endpoint,
                 message: "missing choices[0].message.content".to_string(),
-            })
+            })?;
+        Ok(ChatCompletion { content, usage })
     }
+}
+
+/// Per-call token accounting reported by the provider. Optional because
+/// not every OpenAI-compatible endpoint returns `usage`; consumers that
+/// depend on it must tolerate `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+/// Result of a successful `chat()` call. `content` is the message body;
+/// `usage` carries the provider's token accounting when available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatCompletion {
+    pub content: String,
+    pub usage: Option<ChatUsage>,
 }
 
 fn provider_unavailable(endpoint: &'static str, error: reqwest::Error) -> ProviderError {
@@ -306,6 +333,8 @@ struct Model {
 #[derive(Debug, Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<UsageDto>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +345,14 @@ struct Choice {
 #[derive(Debug, Deserialize)]
 struct ChoiceMessage {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageDto {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
 }
 
 #[cfg(test)]

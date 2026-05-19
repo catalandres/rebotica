@@ -1192,6 +1192,11 @@ fn handle_run_outcome(
             // Emit broken-layer warnings on stderr.
             emit_broken_layer_reasons(&failure.broken_layers, reporter_mode, false);
             if let Some(run) = &failure.run {
+                // The CLI does not have visibility into the apprentice's
+                // usage data at this layer — dispatch already emitted a
+                // `run_completed` with metrics during the actual failure.
+                // This emit is a belt-and-braces no-op for cases where the
+                // engine somehow missed the event; keep metrics empty.
                 emit_run_completed_event(
                     &run.id,
                     &failure.kind,
@@ -1199,6 +1204,9 @@ fn handle_run_outcome(
                     false,
                     Some(failure.code),
                     started_at,
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                 );
@@ -1911,7 +1919,7 @@ async fn smoke(
         base_url: settings.base_url,
         model,
         probe_prompt,
-        response: text.trim().to_string(),
+        response: text.content.trim().to_string(),
     };
     if reporter.is_json() {
         emit_success(&mut reporter, "smoke", "smoke", started_at, &data)?;
@@ -5062,6 +5070,9 @@ mod tests {
                     output_bytes: Some(512),
                     hallucination_rate: None,
                     confidence: Some(7),
+                    apprentice_prompt_tokens: None,
+                    apprentice_completion_tokens: None,
+                    envelope_bytes: None,
                 },
             ),
         )

@@ -270,7 +270,7 @@ pub async fn dispatch(
         plugin.manifest.schema_version,
     );
 
-    let raw = match provider
+    let chat = match provider
         .chat(
             &model,
             vec![
@@ -284,11 +284,13 @@ pub async fn dispatch(
         )
         .await
     {
-        Ok(raw) => raw,
+        Ok(chat) => chat,
         Err(error) => {
             let code = error_code_for_provider_failure(&error);
             let details = provider_failure_details(&error);
             let _ = rebotica_runlog::write_provider_failure(&persisted, &details);
+            // Pre-chat failure: no usage was reported and no envelope was
+            // produced. All three new metrics fields stay `None`.
             emit_run_completed_event(
                 &persisted.id,
                 &plugin.manifest.kind,
@@ -296,6 +298,9 @@ pub async fn dispatch(
                 false,
                 Some(code),
                 started_at,
+                None,
+                None,
+                None,
                 None,
                 None,
             );
@@ -311,6 +316,10 @@ pub async fn dispatch(
             });
         }
     };
+
+    let raw = chat.content;
+    let apprentice_prompt_tokens = chat.usage.map(|u| u.prompt_tokens);
+    let apprentice_completion_tokens = chat.usage.map(|u| u.completion_tokens);
 
     let _ = rebotica_runlog::write_model_response(&persisted, &raw);
 
@@ -331,6 +340,9 @@ pub async fn dispatch(
                 Some(ErrorCode::OutputInvalid),
                 started_at,
                 None,
+                None,
+                apprentice_prompt_tokens,
+                apprentice_completion_tokens,
                 None,
             );
             let run_id = Some(persisted.id.clone());
@@ -361,6 +373,9 @@ pub async fn dispatch(
                 started_at,
                 None,
                 None,
+                apprentice_prompt_tokens,
+                apprentice_completion_tokens,
+                None,
             );
             let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
@@ -386,6 +401,9 @@ pub async fn dispatch(
                 Some(ErrorCode::Internal),
                 started_at,
                 None,
+                None,
+                apprentice_prompt_tokens,
+                apprentice_completion_tokens,
                 None,
             );
             let run_id = Some(persisted.id.clone());
@@ -417,6 +435,9 @@ pub async fn dispatch(
             started_at,
             None,
             None,
+            apprentice_prompt_tokens,
+            apprentice_completion_tokens,
+            None,
         );
         let run_id = Some(persisted.id.clone());
         return RunOutcome::Failure(RunFailure {
@@ -446,6 +467,13 @@ pub async fn dispatch(
         let _ = rebotica_runlog::write_envelope(&persisted, &envelope);
     }
 
+    // Size of the structured `data` field returned to Prime. Computed
+    // from the parsed value so it reflects the post-validation payload
+    // (not the raw model text, which may include the fenced wrapper).
+    let envelope_bytes = serde_json::to_string(&extracted.value)
+        .ok()
+        .map(|s| s.len() as u64);
+
     emit_run_completed_event(
         &persisted.id,
         &plugin.manifest.kind,
@@ -459,6 +487,9 @@ pub async fn dispatch(
             .get("confidence")
             .and_then(|value| value.as_u64())
             .map(|value| value.min(u8::MAX as u64) as u8),
+        apprentice_prompt_tokens,
+        apprentice_completion_tokens,
+        envelope_bytes,
     );
 
     RunOutcome::Success(RunSuccess {
@@ -924,6 +955,9 @@ pub fn emit_run_completed_event(
     started_at: DateTime<Utc>,
     output_bytes: Option<u64>,
     confidence: Option<u8>,
+    apprentice_prompt_tokens: Option<u64>,
+    apprentice_completion_tokens: Option<u64>,
+    envelope_bytes: Option<u64>,
 ) {
     let Some(envelope_shape) = rebotica_runlog::ledger::EnvelopeShape::from_run_kind(kind) else {
         return;
@@ -948,6 +982,9 @@ pub fn emit_run_completed_event(
             output_bytes,
             hallucination_rate: None,
             confidence,
+            apprentice_prompt_tokens,
+            apprentice_completion_tokens,
+            envelope_bytes,
         },
     );
     if let Err(error) = rebotica_runlog::ledger::append_event(Some(run_id), &event) {

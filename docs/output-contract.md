@@ -230,11 +230,16 @@ The ledger's `EnvelopeShape` enum also reserves `review_diff`, `propose_tests`, 
   "duration_ms": 4321,
   "output_bytes": 1024,
   "hallucination_rate": null,
-  "confidence": 7
+  "confidence": 7,
+  "apprentice_prompt_tokens": 3421,
+  "apprentice_completion_tokens": 612,
+  "envelope_bytes": 1187
 }
 ```
 
 `hallucination_rate` is `null` until issue #51 ships the writer that computes it. `error_code` (snake_case `ErrorCode` name) is populated when `ok` is `false`.
+
+`apprentice_prompt_tokens` and `apprentice_completion_tokens` come from the provider's `usage` block (LM Studio reports them; some upstream proxies strip them). Both are omitted when the provider does not report `usage`, or when the run failed before any provider response arrived. `envelope_bytes` is the byte length of the serialized `data` field returned to Prime — a proxy for Prime's roundtrip context cost (≈ bytes/4 tokens). It is populated whenever a parsed envelope was produced, including the success path and post-validation failure paths; it is `null` only on pre-chat failures. Together, these three fields are the minimum needed to compute net-token-saved estimates against the apprentice corpus; see [measurement.md](measurement.md) for the formula and its limits.
 
 `prime_disposition`:
 
