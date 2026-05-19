@@ -538,6 +538,13 @@ pub struct ExtractedJson {
     pub source: String,
     pub value: Value,
     pub fallback_used: bool,
+    /// Parse error from the primary fence extractor, when a fence was
+    /// located but its contents were not valid JSON and the fallback
+    /// substituted a different object. Surfacing this lets callers report
+    /// the *real* failure (malformed JSON in the model's intended
+    /// payload) instead of the downstream schema mismatch produced by
+    /// validating an unrelated inner sub-object.
+    pub fence_parse_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -565,20 +572,23 @@ pub fn extract_json_payload(
                     source: fence.to_string(),
                     value,
                     fallback_used: false,
+                    fence_parse_error: None,
                 })
             }
             Err(error) => {
+                let fence_parse_error = error.to_string();
                 if let Some((source, value)) = last_balanced_json_object(response) {
                     return Ok(ExtractedJson {
                         extraction: ExtractionRule::Fallback,
                         source,
                         value,
                         fallback_used: true,
+                        fence_parse_error: Some(fence_parse_error),
                     });
                 }
                 return Err(JsonExtractionError {
                     extraction: ExtractionRule::Fence,
-                    parse_error: error.to_string(),
+                    parse_error: fence_parse_error,
                 });
             }
         }
@@ -590,6 +600,7 @@ pub fn extract_json_payload(
             source,
             value,
             fallback_used: true,
+            fence_parse_error: None,
         });
     }
 
@@ -782,6 +793,67 @@ mod tests {
         assert_eq!(extracted.extraction, ExtractionRule::Fallback);
         assert!(extracted.fallback_used);
         assert_eq!(extracted.value, json!({"ok": true}));
+        assert!(
+            extracted.fence_parse_error.is_some(),
+            "fallback after a failed fence should carry the fence parse error"
+        );
+    }
+
+    #[test]
+    fn successful_fence_extraction_has_no_fence_parse_error() {
+        let extracted = extract_json_payload("```json\n{\"ok\":true}\n```").unwrap();
+        assert!(extracted.fence_parse_error.is_none());
+    }
+
+    #[test]
+    fn fence_parse_error_describes_the_real_failure_not_the_substituted_object() {
+        // Regression for issue #69: model wraps output in a `---` frontmatter
+        // marker plus a json fence, but the JSON body contains unescaped
+        // double quotes inside a string value. The fence extractor finds the
+        // intended payload, fails to parse it, and the balanced-brace
+        // fallback locks onto an inner finding object — which then fails
+        // schema validation with a misleading "5 fields missing" report.
+        // The fence parse error is the *real* diagnostic and must be
+        // preserved for callers to surface.
+        let response = concat!(
+            "---\n```json\n",
+            "{\n",
+            "  \"assumptions\": [\"a\"],\n",
+            "  \"confidence\": 10,\n",
+            "  \"findings\": [\n",
+            "    { \"severity\": \"minor\", \"summary\": \"first finding\" },\n",
+            // Unescaped `"_"` inside the summary string breaks the outer JSON.
+            "    { \"severity\": \"minor\", \"summary\": \"uses \"_\" here\" }\n",
+            "  ]\n",
+            "}\n```\n"
+        );
+
+        let extracted = extract_json_payload(response).unwrap();
+
+        assert!(
+            extracted.fallback_used,
+            "malformed fence should trigger the fallback path"
+        );
+        let fence_error = extracted
+            .fence_parse_error
+            .as_deref()
+            .expect("fence parse error must be captured when fallback substitutes");
+        assert!(
+            !fence_error.is_empty(),
+            "fence parse error should be a non-empty diagnostic"
+        );
+        // The substituted object is one of the inner findings, not the
+        // intended outer payload. Schema validation against this would
+        // misleadingly report `assumptions`/`confidence`/etc. as missing —
+        // which is exactly the failure mode this regression test guards.
+        //
+        // If `last_balanced_json_object` is later improved (e.g. to refuse
+        // substituting a structurally smaller object than the failed fence),
+        // these assertions will need to be revisited together with the
+        // matching dispatch-side error message in
+        // `crates/rebotica-run/src/lib.rs`.
+        assert!(extracted.value.get("severity").is_some());
+        assert!(extracted.value.get("assumptions").is_none());
     }
 
     #[test]
