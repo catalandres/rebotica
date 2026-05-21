@@ -193,6 +193,16 @@ pub fn write_envelope<T: Serialize>(run: &PersistedRun, envelope: &T) -> Result<
     write_json(run, "envelope.json", envelope)
 }
 
+/// Persist human-facing coverage/staleness advisories to the run log so
+/// later analysis can see which runs were reviewed against a thin or stale
+/// diff source (#26, #68). No-op when there are no advisories.
+pub fn write_advisories(run: &PersistedRun, advisories: &[String]) -> Result<()> {
+    if advisories.is_empty() {
+        return Ok(());
+    }
+    write_json(run, "advisories.json", &advisories)
+}
+
 fn write_json<T: Serialize>(run: &PersistedRun, name: &str, value: &T) -> Result<()> {
     fs::write(
         run.directory.join(name),

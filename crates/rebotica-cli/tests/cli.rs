@@ -1175,6 +1175,51 @@ fn run_unknown_adapter_argument_is_usage_error() {
 }
 
 #[test]
+fn run_review_require_fresh_base_rejects_stale_branch() {
+    // #26: a branch behind its base, reviewed with --require-fresh-base,
+    // must be rejected before the model runs (exit 20, guard_rejected).
+    let temp = TempDir::new("stale-base-strict");
+    init_git_repo(temp.path());
+    run_git(temp.path(), &["branch", "-M", "main"]);
+    run_git(temp.path(), &["checkout", "-b", "feature"]);
+    fs::write(temp.path().join("feature.rs"), "fn f() {}\n").unwrap();
+    run_git(temp.path(), &["add", "."]);
+    run_git(temp.path(), &["commit", "-m", "feature work"]);
+    // main moves on after the branch forked.
+    run_git(temp.path(), &["checkout", "main"]);
+    fs::write(temp.path().join("landed.rs"), "fn l() {}\n").unwrap();
+    run_git(temp.path(), &["add", "."]);
+    run_git(temp.path(), &["commit", "-m", "landed on main"]);
+    run_git(temp.path(), &["checkout", "feature"]);
+
+    let home = temp.path().join("home");
+    let home_s = home.to_string_lossy().to_string();
+    let output = run_in_env(
+        temp.path(),
+        &[
+            "--json", "run", "review", "--base", "main", "--require-fresh-base", "--model",
+            "local-model",
+        ],
+        &[("HOME", &home_s)],
+    );
+
+    assert_eq!(
+        output.status.code(),
+        Some(20),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["ok"], serde_json::json!(false));
+    assert_eq!(json["error"]["code"], "guard_rejected");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not in this branch"));
+    assert_eq!(json["error"]["details"]["reason"], "stale_base");
+}
+
+#[test]
 fn guard_diff_quiet_emits_single_envelope_to_stdout_nothing_on_stderr() {
     let temp = TempDir::new("guard-diff-quiet");
     init_git_repo(temp.path());
