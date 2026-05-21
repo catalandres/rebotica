@@ -32,6 +32,7 @@ Rebotica's first public distribution should stay boring: a tagged source release
       max_files_changed: 40
   ```
 - **MCP `review_diff` tool gains `max_lines` and `max_files` parameters.** Prime can pass either when the user explicitly opts into a larger review, overriding the project default for that one call. The CLI's `--max-lines` / `--max-files` flags continue to work the same way.
+- **Stale-base detection for `--base` reviews (#26).** When a branch is reviewed against a base that has moved on (the merge-base trails the base tip), `rbtc run review --base <ref>` now warns — naming how many commits the base has that the branch lacks and suggesting a rebase — and records the advisory in the run log (`advisories.json`). The diff itself already uses merge-base (3-dot) semantics so landed work isn't shown as deletions; this surfaces the *staleness* so the reviewer knows context may be missing. A new `--require-fresh-base` flag turns the warning into a hard gate: it exits `guard_rejected` (20) before the model runs when the base is stale. Default behavior warns and continues. Coverage advisories from working-tree reviews (#68) are persisted to `advisories.json` too.
 
 ### Envelope contract
 

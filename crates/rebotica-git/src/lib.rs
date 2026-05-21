@@ -94,6 +94,14 @@ pub fn commits_ahead_of(base: &str) -> Result<usize> {
     commits_ahead_of_in(None, base)
 }
 
+/// Count commits reachable from `base` but not from `HEAD` (`HEAD..base`).
+/// This is how far the branch is *behind* `base` — i.e. commits that
+/// landed on `base` after the branch forked. Non-zero means the branch's
+/// merge-base is stale relative to the `base` tip (#26).
+pub fn commits_behind_of(base: &str) -> Result<usize> {
+    commits_behind_of_in(None, base)
+}
+
 fn assert_repository_in(cwd: Option<&Path>) -> Result<()> {
     output_in(cwd, ["rev-parse", "--show-toplevel"]).map(|_| ())
 }
@@ -116,6 +124,11 @@ fn detect_trunk_in(cwd: Option<&Path>) -> Option<String> {
 
 fn commits_ahead_of_in(cwd: Option<&Path>, base: &str) -> Result<usize> {
     let count = output_in(cwd, ["rev-list", "--count", &format!("{base}..HEAD")])?;
+    Ok(count.trim().parse().unwrap_or(0))
+}
+
+fn commits_behind_of_in(cwd: Option<&Path>, base: &str) -> Result<usize> {
+    let count = output_in(cwd, ["rev-list", "--count", &format!("HEAD..{base}")])?;
     Ok(count.trim().parse().unwrap_or(0))
 }
 
@@ -477,6 +490,29 @@ mod tests {
     fn detect_trunk_finds_main() {
         let repo = fixture_repo();
         assert_eq!(detect_trunk_in(Some(repo.path())).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn commits_behind_of_counts_base_commits_missing_from_branch() {
+        // #26 staleness: branch forks, then main gains 2 commits. The
+        // branch is 2 behind; main is 0 behind the branch.
+        let repo = fixture_repo();
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        fs::write(repo.path().join("src/lib.rs"), "pub fn answer() -> u8 {\n    2\n}\n").unwrap();
+        commit_all(repo.path(), "feature work");
+
+        run_git(repo.path(), &["checkout", "main"]);
+        fs::write(repo.path().join("src/a.rs"), "pub fn a() {}\n").unwrap();
+        commit_all(repo.path(), "main one");
+        fs::write(repo.path().join("src/b.rs"), "pub fn b() {}\n").unwrap();
+        commit_all(repo.path(), "main two");
+
+        run_git(repo.path(), &["checkout", "feature"]);
+        assert_eq!(commits_behind_of_in(Some(repo.path()), "main").unwrap(), 2);
+
+        // A branch that is up to date with its base is 0 behind.
+        run_git(repo.path(), &["checkout", "main"]);
+        assert_eq!(commits_behind_of_in(Some(repo.path()), "main").unwrap(), 0);
     }
 
     #[test]

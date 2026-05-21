@@ -334,6 +334,7 @@ pub async fn dispatch(
     if freeform {
         let data = serde_json::json!({ "raw_response": raw });
         let _ = rebotica_runlog::write_parsed_output(&persisted, &data);
+        let _ = rebotica_runlog::write_advisories(&persisted, &assembled.advisories);
         {
             use rebotica_core::output::Envelope;
             let envelope = Envelope::builder(&effective_kind)
@@ -519,6 +520,7 @@ pub async fn dispatch(
     }
 
     let _ = rebotica_runlog::write_parsed_output(&persisted, &extracted.value);
+    let _ = rebotica_runlog::write_advisories(&persisted, &assembled.advisories);
 
     // Write a stand-in envelope.json using the command string from the request.
     // The CLI caller will overwrite this with its final envelope that includes
@@ -1484,6 +1486,7 @@ fn diff_adapter(
     let base = cursor.take_option("--base")?;
     let range = cursor.take_option("--range")?;
     let cached = cursor.take_flag("--cached");
+    let require_fresh_base = cursor.take_flag("--require-fresh-base");
     let max_files = cursor
         .take_option("--max-files")?
         .map(|value| {
@@ -1515,6 +1518,35 @@ fn diff_adapter(
     let diff_source = selected_diff_source(&base, &range, cached)
         .map_err(|error| adapter_failure(ErrorCode::Usage, error.to_string(), None))?;
     let diff_source_description = diff_source.description();
+
+    // Stale-base detection (#26): for an explicit `--base`, the diff uses
+    // merge-base semantics (so landed work isn't shown as deletions), but a
+    // branch reviewed against a base that has moved on may still be missing
+    // context. Warn — or, with `--require-fresh-base`, refuse before the
+    // model runs.
+    let stale_base = match &diff_source {
+        rebotica_git::DiffSource::Base(base_ref) => rebotica_git::commits_behind_of(base_ref)
+            .ok()
+            .filter(|behind| *behind > 0)
+            .map(|behind| (base_ref.clone(), behind)),
+        _ => None,
+    };
+    if require_fresh_base {
+        if let Some((base_ref, behind)) = &stale_base {
+            return Err(adapter_failure(
+                ErrorCode::GuardRejected,
+                format!(
+                    "base '{base_ref}' has {behind} commit(s) not in this branch; \
+                     run `git rebase {base_ref}` (or drop --require-fresh-base to review anyway)"
+                ),
+                Some(serde_json::json!({
+                    "reason": "stale_base",
+                    "base": base_ref,
+                    "behind": behind,
+                })),
+            ));
+        }
+    }
     let changed_files = rebotica_git::changed_files_for(&diff_source).map_err(|error| {
         adapter_failure(
             ErrorCode::Config,
@@ -1601,6 +1633,7 @@ fn diff_adapter(
         changed_lines,
         &diff_source_description,
         ahead_of_trunk,
+        stale_base,
     );
     let envelope_text = envelope.to_yaml().map_err(|error| {
         adapter_failure(
@@ -1678,16 +1711,16 @@ fn diff_adapter(
 }
 
 /// Build human-facing coverage notes for a diff review. Always reports
-/// what was reviewed; when `ahead_of_trunk` is `Some((trunk, n))` it also
-/// warns that HEAD carries `n` committed commits the diff doesn't include
-/// (the silent-narrow-coverage failure mode from #68). The caller decides
-/// whether to compute that (only meaningful for implicit working-tree /
-/// staged sources).
+/// what was reviewed. `ahead_of_trunk` warns that HEAD carries committed
+/// commits the diff doesn't include (#68, implicit sources only).
+/// `behind_base` warns that an explicit `--base` is stale — the base has
+/// commits this branch lacks (#26). The caller decides which to compute.
 fn diff_coverage_advisories(
     file_count: usize,
     line_count: usize,
     source_description: &str,
     ahead_of_trunk: Option<(String, usize)>,
+    behind_base: Option<(String, usize)>,
 ) -> Vec<String> {
     let files_word = if file_count == 1 { "file" } else { "files" };
     let lines_word = if line_count == 1 { "line" } else { "lines" };
@@ -1702,6 +1735,16 @@ fn diff_coverage_advisories(
             "⚠ HEAD is {ahead} {commits_word} ahead of '{trunk}' with committed changes NOT in this review."
         ));
         advisories.push(format!("  Re-run with --base {trunk} to review them."));
+    }
+
+    if let Some((base_ref, behind)) = behind_base {
+        let commits_word = if behind == 1 { "commit" } else { "commits" };
+        advisories.push(format!(
+            "⚠ Stale base: '{base_ref}' has {behind} {commits_word} not in this branch (merge-base trails the base tip)."
+        ));
+        advisories.push(format!(
+            "  The review excludes that landed work; consider `git rebase {base_ref}`."
+        ));
     }
 
     advisories
@@ -1984,12 +2027,13 @@ mod tests {
 
     #[test]
     fn coverage_advisories_report_counts_and_source_with_pluralization() {
-        let a = diff_coverage_advisories(1, 1, "unstaged working tree changes (git diff)", None);
+        let a =
+            diff_coverage_advisories(1, 1, "unstaged working tree changes (git diff)", None, None);
         assert_eq!(a[0], "Reviewed: 1 file, 1 line");
         assert!(a[1].contains("unstaged working tree"));
-        assert_eq!(a.len(), 2, "no guard line when ahead_of_trunk is None");
+        assert_eq!(a.len(), 2, "no guard line when no warnings apply");
 
-        let plural = diff_coverage_advisories(3, 42, "x", None);
+        let plural = diff_coverage_advisories(3, 42, "x", None, None);
         assert_eq!(plural[0], "Reviewed: 3 files, 42 lines");
     }
 
@@ -2003,6 +2047,7 @@ mod tests {
             3,
             "unstaged working tree changes (git diff)",
             Some(("main".to_string(), 5)),
+            None,
         );
         let joined = a.join("\n");
         assert!(joined.contains("5 commits ahead of 'main'"), "got: {joined}");
@@ -2012,9 +2057,32 @@ mod tests {
 
     #[test]
     fn coverage_advisories_singular_commit() {
-        let a = diff_coverage_advisories(0, 0, "x", Some(("origin/main".to_string(), 1)));
+        let a = diff_coverage_advisories(0, 0, "x", Some(("origin/main".to_string(), 1)), None);
         let joined = a.join("\n");
         assert!(joined.contains("1 commit ahead"), "got: {joined}");
         assert!(joined.contains("--base origin/main"), "got: {joined}");
+    }
+
+    #[test]
+    fn coverage_advisories_warn_when_base_is_stale() {
+        // #26: explicit --base that has moved on. Name the count and the
+        // rebase suggestion; pluralize correctly.
+        let a = diff_coverage_advisories(
+            2,
+            10,
+            "changes from merge-base(main, HEAD) to HEAD",
+            None,
+            Some(("main".to_string(), 3)),
+        );
+        let joined = a.join("\n");
+        assert!(joined.contains("Stale base: 'main' has 3 commits"), "got: {joined}");
+        assert!(joined.contains("git rebase main"), "got: {joined}");
+
+        let singular = diff_coverage_advisories(1, 1, "x", None, Some(("origin/main".to_string(), 1)));
+        assert!(
+            singular.join("\n").contains("has 1 commit not in this branch"),
+            "got: {}",
+            singular.join("\n")
+        );
     }
 }
