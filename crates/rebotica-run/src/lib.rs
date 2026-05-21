@@ -195,23 +195,9 @@ pub async fn dispatch(
         }
     };
 
-    let worker_mode = worker_mode_for_run(&plugin.mode);
-    let model = match resolve_model(&loaded, worker_mode, assembled.options.model.clone()) {
-        Ok(model) => model,
-        Err(error) => {
-            let message = error.to_string();
-            let run_id = record_rejection(&effective_kind, ErrorCode::Config, &message, None);
-            return RunOutcome::Failure(RunFailure {
-                run: None,
-                run_id,
-                kind: effective_kind,
-                code: ErrorCode::Config,
-                message,
-                details: None,
-                broken_layers,
-            });
-        }
-    };
+    // Model was resolved during assembly (the diff adapter needs it to
+    // pick per-model size limits, #61); reuse it rather than re-resolving.
+    let model = assembled.resolved_model.clone();
 
     let settings = match provider_settings(&loaded, assembled.options.provider.clone()) {
         Ok(settings) => settings,
@@ -1240,6 +1226,10 @@ struct AssembledRun {
     /// Files the run touches (e.g. changed files for a diff review). Used
     /// to ground review findings for the hallucination-rate writer (#51).
     touched_files: Vec<String>,
+    /// The alias-resolved model id this run targets. Resolved during
+    /// assembly so the diff adapter can pick per-model size limits (#61);
+    /// reused by dispatch instead of re-resolving.
+    resolved_model: String,
 }
 
 /// Lightweight argument parser used by the adapter chain.
@@ -1360,6 +1350,15 @@ fn assemble_run(
     let mut cursor = AdapterArgCursor::new(adapter_args);
     let options = parse_run_engine_options(&mut cursor)?;
 
+    // Resolve the model so the diff adapter can pick per-model size limits
+    // (#61). Resolution can fail (no model configured); defer that error
+    // until after the unconsumed-argument check below, so a typo'd flag
+    // still reports "unknown argument" rather than "missing model". When
+    // unresolved, the diff adapter falls back to the project default limit.
+    let worker_mode = worker_mode_for_run(&plugin.mode);
+    let resolved_model_result = resolve_model(&loaded, worker_mode, options.model.clone());
+    let model_for_limits = resolved_model_result.as_deref().ok();
+
     let mut blocks = vec![format!(
         "## Project Config\n{}",
         loaded.raw_or_placeholder()
@@ -1373,7 +1372,7 @@ fn assemble_run(
     for input in &plugin.manifest.inputs {
         match input.as_str() {
             "diff" => {
-                let diff = diff_adapter(cwd, &loaded, &plugin.mode, &mut cursor)?;
+                let diff = diff_adapter(cwd, &loaded, &plugin.mode, model_for_limits, &mut cursor)?;
                 envelope_text = diff.envelope_text;
                 touched_files.extend(diff.touched_files);
                 blocks.extend(diff.blocks);
@@ -1422,6 +1421,10 @@ fn assemble_run(
         ));
     }
 
+    // Args validated; now the model must resolve (deferred from above).
+    let resolved_model = resolved_model_result
+        .map_err(|error| adapter_failure(ErrorCode::Config, error.to_string(), None))?;
+
     blocks.push(plugin.prompt.clone());
     Ok(AssembledRun {
         envelope_text,
@@ -1430,6 +1433,7 @@ fn assemble_run(
         options,
         advisories,
         touched_files,
+        resolved_model,
     })
 }
 
@@ -1467,6 +1471,7 @@ fn diff_adapter(
     cwd: &Path,
     loaded: &LoadedConfig,
     mode: &str,
+    resolved_model: Option<&str>,
     cursor: &mut AdapterArgCursor,
 ) -> std::result::Result<AdapterOutput, AdapterFailure> {
     rebotica_git::assert_repository().map_err(|error| {
@@ -1524,8 +1529,15 @@ fn diff_adapter(
             None,
         )
     })?;
-    let effective_max_files = max_files.unwrap_or(loaded.config.default_limits.max_files_changed);
-    let effective_max_lines = max_lines.unwrap_or(loaded.config.default_limits.max_changed_lines);
+    // Per-call flags win; otherwise fall to the per-model limit, which in
+    // turn inherits from the project default for unset fields (#61). When
+    // the model didn't resolve, fall back to the project default directly.
+    let model_limits = match resolved_model {
+        Some(model) => rebotica_core::effective_limits(&loaded.config, model),
+        None => loaded.config.default_limits.clone(),
+    };
+    let effective_max_files = max_files.unwrap_or(model_limits.max_files_changed);
+    let effective_max_lines = max_lines.unwrap_or(model_limits.max_changed_lines);
     if changed_files.len() > effective_max_files {
         return Err(adapter_failure(
             ErrorCode::OverLimit,

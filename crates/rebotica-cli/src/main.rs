@@ -1340,7 +1340,20 @@ async fn doctor(
         let model = model_for_mode(&loaded.config, mode);
         let id = format!("model.{}", mode.as_str());
         if let Some(model) = model {
-            checks.push(Check::ok(&id, "Model route resolves", model));
+            let limits = rebotica_core::effective_limits(&loaded.config, &model);
+            let source = if loaded.config.model_limits.contains_key(&model) {
+                "per-model limit"
+            } else {
+                "project default"
+            };
+            checks.push(Check::ok(
+                &id,
+                "Model route resolves",
+                format!(
+                    "{model} (limits: {} lines / {} files, {source})",
+                    limits.max_changed_lines, limits.max_files_changed,
+                ),
+            ));
         } else {
             checks.push(Check::warn(
                 &id,
