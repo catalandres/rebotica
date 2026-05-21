@@ -310,7 +310,7 @@ pub async fn dispatch(
             let details = provider_failure_details(&error);
             let _ = rebotica_runlog::write_provider_failure(&persisted, &details);
             // Pre-chat failure: no usage was reported and no envelope was
-            // produced. All three new metrics fields stay `None`.
+            // produced. All metrics stay unset.
             emit_run_completed_event(
                 &persisted.id,
                 &effective_kind,
@@ -318,11 +318,7 @@ pub async fn dispatch(
                 false,
                 Some(code),
                 started_at,
-                None,
-                None,
-                None,
-                None,
-                None,
+                RunCompletedMetrics::default(),
             );
             let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
@@ -363,6 +359,8 @@ pub async fn dispatch(
             let _ = rebotica_runlog::write_envelope(&persisted, &envelope);
         }
         let envelope_bytes = serde_json::to_string(&data).ok().map(|s| s.len() as u64);
+        // Freeform runs bypass extraction/validation, so there are no
+        // structured findings to ground — the hallucination rate stays unset.
         emit_run_completed_event(
             &persisted.id,
             &effective_kind,
@@ -370,11 +368,13 @@ pub async fn dispatch(
             true,
             None,
             started_at,
-            Some(raw.len() as u64),
-            None,
-            apprentice_prompt_tokens,
-            apprentice_completion_tokens,
-            envelope_bytes,
+            RunCompletedMetrics {
+                output_bytes: Some(raw.len() as u64),
+                apprentice_prompt_tokens,
+                apprentice_completion_tokens,
+                envelope_bytes,
+                ..Default::default()
+            },
         );
         return RunOutcome::Success(RunSuccess {
             run: persisted,
@@ -404,11 +404,11 @@ pub async fn dispatch(
                 false,
                 Some(ErrorCode::OutputInvalid),
                 started_at,
-                None,
-                None,
-                apprentice_prompt_tokens,
-                apprentice_completion_tokens,
-                None,
+                RunCompletedMetrics {
+                    apprentice_prompt_tokens,
+                    apprentice_completion_tokens,
+                    ..Default::default()
+                },
             );
             let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
@@ -439,11 +439,11 @@ pub async fn dispatch(
                 false,
                 Some(ErrorCode::Internal),
                 started_at,
-                None,
-                None,
-                apprentice_prompt_tokens,
-                apprentice_completion_tokens,
-                None,
+                RunCompletedMetrics {
+                    apprentice_prompt_tokens,
+                    apprentice_completion_tokens,
+                    ..Default::default()
+                },
             );
             let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
@@ -468,11 +468,11 @@ pub async fn dispatch(
                 false,
                 Some(ErrorCode::Internal),
                 started_at,
-                None,
-                None,
-                apprentice_prompt_tokens,
-                apprentice_completion_tokens,
-                None,
+                RunCompletedMetrics {
+                    apprentice_prompt_tokens,
+                    apprentice_completion_tokens,
+                    ..Default::default()
+                },
             );
             let run_id = Some(persisted.id.clone());
             return RunOutcome::Failure(RunFailure {
@@ -506,11 +506,11 @@ pub async fn dispatch(
             false,
             Some(ErrorCode::OutputInvalid),
             started_at,
-            None,
-            None,
-            apprentice_prompt_tokens,
-            apprentice_completion_tokens,
-            None,
+            RunCompletedMetrics {
+                apprentice_prompt_tokens,
+                apprentice_completion_tokens,
+                ..Default::default()
+            },
         );
         let message = match extracted.fence_parse_error.as_deref() {
             Some(fence_error) => format!(
@@ -555,6 +555,16 @@ pub async fn dispatch(
         .ok()
         .map(|s| s.len() as u64);
 
+    // Structural hallucination rate, currently only defined for review
+    // findings (#51). Grounds each finding's file/line against the changed
+    // files and the working tree.
+    let hallucination_rate = if effective_kind == "run.review" {
+        let grounding = WorkingTreeGrounding::new(cwd, &assembled.touched_files);
+        review_hallucination_rate(&extracted.value, &grounding)
+    } else {
+        None
+    };
+
     emit_run_completed_event(
         &persisted.id,
         &effective_kind,
@@ -562,15 +572,18 @@ pub async fn dispatch(
         true,
         None,
         started_at,
-        Some(raw.len() as u64),
-        extracted
-            .value
-            .get("confidence")
-            .and_then(|value| value.as_u64())
-            .map(|value| value.min(u8::MAX as u64) as u8),
-        apprentice_prompt_tokens,
-        apprentice_completion_tokens,
-        envelope_bytes,
+        RunCompletedMetrics {
+            output_bytes: Some(raw.len() as u64),
+            confidence: extracted
+                .value
+                .get("confidence")
+                .and_then(|value| value.as_u64())
+                .map(|value| value.min(u8::MAX as u64) as u8),
+            apprentice_prompt_tokens,
+            apprentice_completion_tokens,
+            envelope_bytes,
+            hallucination_rate,
+        },
     );
 
     RunOutcome::Success(RunSuccess {
@@ -1028,6 +1041,100 @@ pub fn emit_run_started_event(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Resolves whether a finding's file/line citation grounds against the
+/// reviewed code. Abstracted so the rate computation is unit-testable
+/// without a real working tree.
+trait CodeGrounding {
+    /// `true` when `path` is a real file the review could legitimately
+    /// reference (in the diff's changed set or present in the working tree).
+    fn file_exists(&self, path: &str) -> bool;
+    /// Line count of `path`, or `None` if it can't be read. Used to check
+    /// whether a cited line number falls within the file.
+    fn line_count(&self, path: &str) -> Option<usize>;
+}
+
+/// Production grounding: a file is real if it's in the diff's changed set
+/// or exists on disk; line counts come from reading the working-tree file.
+struct WorkingTreeGrounding<'a> {
+    cwd: &'a Path,
+    changed: std::collections::HashSet<&'a str>,
+}
+
+impl<'a> WorkingTreeGrounding<'a> {
+    fn new(cwd: &'a Path, changed_files: &'a [String]) -> Self {
+        Self {
+            cwd,
+            changed: changed_files.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+impl CodeGrounding for WorkingTreeGrounding<'_> {
+    fn file_exists(&self, path: &str) -> bool {
+        self.changed.contains(path) || self.cwd.join(path).is_file()
+    }
+
+    fn line_count(&self, path: &str) -> Option<usize> {
+        fs::read_to_string(self.cwd.join(path))
+            .ok()
+            .map(|content| content.lines().count())
+    }
+}
+
+/// Structural hallucination rate for a `run.review` payload: the fraction
+/// of findings whose `file`/`line` citations don't ground against the
+/// reviewed code. A finding is ungrounded when its file doesn't exist, or
+/// its cited line falls outside that file.
+///
+/// Denominator is `findings.len()`. Returns `None` when there are no
+/// findings (no signal) or the payload has no findings array. This is the
+/// structural half of the design-doc definition; semantic claim-grounding
+/// (behaviour not supported by the diff hunks) is deferred.
+fn review_hallucination_rate(data: &serde_json::Value, grounding: &impl CodeGrounding) -> Option<f64> {
+    let findings = data.get("findings")?.as_array()?;
+    if findings.is_empty() {
+        return None;
+    }
+    let ungrounded = findings
+        .iter()
+        .filter(|finding| !finding_is_grounded(finding, grounding))
+        .count();
+    Some(ungrounded as f64 / findings.len() as f64)
+}
+
+fn finding_is_grounded(finding: &serde_json::Value, grounding: &impl CodeGrounding) -> bool {
+    // A finding with no file citation can't be structurally checked; treat
+    // it as grounded so the rate measures false citations, not missing ones.
+    let Some(file) = finding.get("file").and_then(|v| v.as_str()) else {
+        return true;
+    };
+    if !grounding.file_exists(file) {
+        return false;
+    }
+    match finding.get("line").and_then(|v| v.as_u64()) {
+        None => true,
+        Some(line) => match grounding.line_count(file) {
+            Some(count) => line >= 1 && line as usize <= count,
+            None => false,
+        },
+    }
+}
+
+/// Optional metrics attached to a `run_completed` ledger event. Failure
+/// paths leave these unset (`Default`); the success path fills what it has.
+#[derive(Debug, Default, Clone)]
+pub struct RunCompletedMetrics {
+    pub output_bytes: Option<u64>,
+    pub confidence: Option<u8>,
+    pub apprentice_prompt_tokens: Option<u64>,
+    pub apprentice_completion_tokens: Option<u64>,
+    pub envelope_bytes: Option<u64>,
+    /// Structural hallucination rate for `run.review` (fraction of findings
+    /// whose file/line references don't ground against the reviewed code).
+    /// `None` for other modes, freeform runs, and findings-free reviews.
+    pub hallucination_rate: Option<f64>,
+}
+
 pub fn emit_run_completed_event(
     run_id: &str,
     kind: &str,
@@ -1035,11 +1142,7 @@ pub fn emit_run_completed_event(
     ok: bool,
     error_code: Option<ErrorCode>,
     started_at: DateTime<Utc>,
-    output_bytes: Option<u64>,
-    confidence: Option<u8>,
-    apprentice_prompt_tokens: Option<u64>,
-    apprentice_completion_tokens: Option<u64>,
-    envelope_bytes: Option<u64>,
+    metrics: RunCompletedMetrics,
 ) {
     let Some(envelope_shape) = rebotica_runlog::ledger::EnvelopeShape::from_run_kind(kind) else {
         return;
@@ -1061,12 +1164,12 @@ pub fn emit_run_completed_event(
             ok,
             error_code: error_code.map(|c| c.as_str().to_string()),
             duration_ms,
-            output_bytes,
-            hallucination_rate: None,
-            confidence,
-            apprentice_prompt_tokens,
-            apprentice_completion_tokens,
-            envelope_bytes,
+            output_bytes: metrics.output_bytes,
+            hallucination_rate: metrics.hallucination_rate,
+            confidence: metrics.confidence,
+            apprentice_prompt_tokens: metrics.apprentice_prompt_tokens,
+            apprentice_completion_tokens: metrics.apprentice_completion_tokens,
+            envelope_bytes: metrics.envelope_bytes,
         },
     );
     if let Err(error) = rebotica_runlog::ledger::append_event(Some(run_id), &event) {
@@ -1134,6 +1237,9 @@ struct AssembledRun {
     selected_skills: Vec<ResolvedSkill>,
     options: RunEngineOptions,
     advisories: Vec<String>,
+    /// Files the run touches (e.g. changed files for a diff review). Used
+    /// to ground review findings for the hallucination-rate writer (#51).
+    touched_files: Vec<String>,
 }
 
 /// Lightweight argument parser used by the adapter chain.
@@ -1323,6 +1429,7 @@ fn assemble_run(
         selected_skills,
         options,
         advisories,
+        touched_files,
     })
 }
 
@@ -1766,6 +1873,102 @@ fn run_guard_adapter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    /// Mock grounding: files present in the map exist, with the given line
+    /// count. Files absent from the map don't exist.
+    struct MockGrounding {
+        files: HashMap<&'static str, usize>,
+    }
+
+    impl CodeGrounding for MockGrounding {
+        fn file_exists(&self, path: &str) -> bool {
+            self.files.contains_key(path)
+        }
+        fn line_count(&self, path: &str) -> Option<usize> {
+            self.files.get(path).copied()
+        }
+    }
+
+    fn grounding(files: &[(&'static str, usize)]) -> MockGrounding {
+        MockGrounding {
+            files: files.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn hallucination_rate_flags_nonexistent_file() {
+        // Acceptance from #51: one real file, one fake file → 0.5.
+        let data = serde_json::json!({
+            "findings": [
+                { "file": "src/real.rs", "line": 3 },
+                { "file": "src/fake.rs", "line": 1 },
+            ]
+        });
+        let g = grounding(&[("src/real.rs", 10)]);
+        assert_eq!(review_hallucination_rate(&data, &g), Some(0.5));
+    }
+
+    #[test]
+    fn hallucination_rate_flags_out_of_range_line() {
+        let data = serde_json::json!({
+            "findings": [
+                { "file": "src/a.rs", "line": 5 },    // in range
+                { "file": "src/a.rs", "line": 999 },  // beyond EOF
+                { "file": "src/a.rs", "line": 0 },    // lines are 1-indexed
+            ]
+        });
+        let g = grounding(&[("src/a.rs", 10)]);
+        // 2 of 3 ungrounded.
+        assert_eq!(review_hallucination_rate(&data, &g), Some(2.0 / 3.0));
+    }
+
+    #[test]
+    fn hallucination_rate_grounds_file_only_finding() {
+        // A finding citing a real file but no line is grounded.
+        let data = serde_json::json!({
+            "findings": [{ "file": "src/a.rs" }]
+        });
+        let g = grounding(&[("src/a.rs", 3)]);
+        assert_eq!(review_hallucination_rate(&data, &g), Some(0.0));
+    }
+
+    #[test]
+    fn hallucination_rate_treats_fileless_finding_as_grounded() {
+        // No file citation → can't be a false citation → not counted against.
+        let data = serde_json::json!({
+            "findings": [{ "summary": "general concern, no file" }]
+        });
+        let g = grounding(&[]);
+        assert_eq!(review_hallucination_rate(&data, &g), Some(0.0));
+    }
+
+    #[test]
+    fn hallucination_rate_is_none_without_findings() {
+        let g = grounding(&[]);
+        // Empty findings array → no denominator → None.
+        assert_eq!(
+            review_hallucination_rate(&serde_json::json!({ "findings": [] }), &g),
+            None
+        );
+        // Missing findings key (e.g. a non-review payload) → None.
+        assert_eq!(
+            review_hallucination_rate(&serde_json::json!({ "analysis": "x" }), &g),
+            None
+        );
+    }
+
+    #[test]
+    fn hallucination_rate_all_grounded_is_zero() {
+        let data = serde_json::json!({
+            "findings": [
+                { "file": "a.rs", "line": 1 },
+                { "file": "b.rs", "line": 2 },
+            ]
+        });
+        let g = grounding(&[("a.rs", 5), ("b.rs", 5)]);
+        assert_eq!(review_hallucination_rate(&data, &g), Some(0.0));
+    }
 
     #[test]
     fn coverage_advisories_report_counts_and_source_with_pluralization() {
