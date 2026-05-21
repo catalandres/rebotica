@@ -17,7 +17,20 @@ Rebotica's first public distribution should stay boring: a tagged source release
 - **`scripts/mcp-eval.sh`** measures whether Claude Code invokes the right Rebotica MCP tool unprompted. Fires three seeded prompts × three runs against `claude --print --output-format stream-json --mcp-config ...` and reports `RESULT: N/9 passed`. Per Success Criterion 1 of the v0.3 milestone: ≥7/9 ships as planned, 5–6/9 ships with a known-issue note (tool-description iteration becomes the v0.3.x headline), ≤4/9 blocks the tag. The MCP server defaults to `REBOTICA_MCP_OFFLINE_PROBE=1` mode under the eval, so no provider tokens are spent on the apprentice side (Prime-side Claude tokens are still spent — one short prompt per session). Requires `claude`, `rbtc`, `jq`, and an `ANTHROPIC_API_KEY`. Tune via `REBOTICA_EVAL_MODEL`, `REBOTICA_EVAL_RUNS`, `REBOTICA_EVAL_LIVE`.
 - **`REBOTICA_MCP_OFFLINE_PROBE`** environment variable: when set, the `rbtc mcp serve` tool handlers return a canned stub (with a fresh `run_id`) instead of calling the dispatch engine or the provider. Intended only for telemetry harnesses like `scripts/mcp-eval.sh`; do not set in production.
 - **`rbtc runs list`** and **`rbtc runs show RUN_ID`** — new commands that query the apprentice ledger and render the per-run apprentice card. `list` supports `--limit`, `--kind`, `--model` filters; `show` renders a terminal-pretty card in human mode and a `runs.show` envelope in JSON mode with fields `apprentice_model`, `confidence`, `useful_finding`, `rejected_claim`, `recommended_next`. Pre-ledger runs (created before #44 landed) degrade gracefully with `source: "pre-ledger"`; the rejected-claim slot is populated by a placeholder until the hallucination-rate writer (#51) lands.
-- **Default diff size limits raised: `max_changed_lines: 300 → 1000`, `max_files_changed: 5 → 25`.** The old defaults were aimed at tightly scoped review tasks but caused most real-world PRs to bounce before reaching the apprentice. Still tunable via `.rebotica.yml`; per-model defaults are a v0.4 design (#61).
+- **Default diff size limits raised: `max_changed_lines: 300 → 1000`, `max_files_changed: 5 → 25`.** The old defaults were aimed at tightly scoped review tasks but caused most real-world PRs to bounce before reaching the apprentice. Still tunable via `.rebotica.yml`.
+- **Per-model diff size limits (#61).** A new `model_limits` config map keyed by the *resolved* model id overrides `default_limits` field-by-field, so a project can give a small model a tight cap (`gemma-2b: { max_changed_lines: 200 }`) and a large one more headroom (`qwen-32b: { max_changed_lines: 1800 }`) without changing the project default. Precedence is per-call flags (`--max-lines`/`--max-files`, MCP `max_lines`/`max_files`) → per-model override → project default; unset fields inherit the project default; unknown models fall back to it cleanly. `rbtc doctor` shows each route's effective limits and whether they come from a per-model entry or the project default.
+
+  ```yaml
+  default_limits:
+    max_changed_lines: 1000
+    max_files_changed: 25
+  model_limits:
+    "google/gemma-2b":
+      max_changed_lines: 200      # max_files_changed inherits 25
+    "qwen/qwen3-coder-next":
+      max_changed_lines: 1800
+      max_files_changed: 40
+  ```
 - **MCP `review_diff` tool gains `max_lines` and `max_files` parameters.** Prime can pass either when the user explicitly opts into a larger review, overriding the project default for that one call. The CLI's `--max-lines` / `--max-files` flags continue to work the same way.
 
 ### Envelope contract

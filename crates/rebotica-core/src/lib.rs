@@ -19,6 +19,13 @@ pub struct ProjectConfig {
     pub sensitive_paths: Vec<String>,
     #[serde(default)]
     pub default_limits: Limits,
+    /// Per-model diff-size overrides, keyed by the *resolved* model id
+    /// (after alias resolution — the string that reaches the provider and
+    /// appears in the ledger). Each entry overrides `default_limits`
+    /// field-by-field; unset fields inherit the project default. See
+    /// [`effective_limits`].
+    #[serde(default)]
+    pub model_limits: BTreeMap<String, LimitsOverride>,
     #[serde(default)]
     pub providers: Providers,
     #[serde(default)]
@@ -67,6 +74,36 @@ impl Default for Limits {
             max_changed_lines: default_max_changed_lines(),
             max_files_changed: default_max_files_changed(),
         }
+    }
+}
+
+/// A per-model override of [`Limits`]. Fields are `Option` so an entry can
+/// override only `max_changed_lines` (say) while inheriting
+/// `max_files_changed` from the project default — true per-field
+/// inheritance rather than resetting unspecified fields to the built-in
+/// defaults. See [`effective_limits`].
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct LimitsOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_changed_lines: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_files_changed: Option<usize>,
+}
+
+/// Resolve the effective diff-size limits for a given resolved model id.
+///
+/// Precedence (most specific wins): per-call CLI/MCP flags (applied by the
+/// diff adapter on top of this) → per-model override (`model_limits`) →
+/// project `default_limits`. Unknown models fall back cleanly to the
+/// project default.
+pub fn effective_limits(config: &ProjectConfig, resolved_model: &str) -> Limits {
+    let base = &config.default_limits;
+    match config.model_limits.get(resolved_model) {
+        Some(over) => Limits {
+            max_changed_lines: over.max_changed_lines.unwrap_or(base.max_changed_lines),
+            max_files_changed: over.max_files_changed.unwrap_or(base.max_files_changed),
+        },
+        None => base.clone(),
     }
 }
 
@@ -439,6 +476,77 @@ mod tests {
 
         assert_eq!(model_for_mode(&config, WorkerMode::Default), None);
         assert_eq!(model_for_mode(&config, WorkerMode::Patch), None);
+    }
+
+    #[test]
+    fn effective_limits_falls_back_to_project_default_for_unknown_model() {
+        let mut config = ProjectConfig::default();
+        config.default_limits = Limits {
+            max_changed_lines: 800,
+            max_files_changed: 30,
+        };
+        let limits = effective_limits(&config, "some/unconfigured-model");
+        assert_eq!(limits.max_changed_lines, 800);
+        assert_eq!(limits.max_files_changed, 30);
+    }
+
+    #[test]
+    fn effective_limits_applies_per_model_override() {
+        let mut config = ProjectConfig::default();
+        config.model_limits.insert(
+            "google/gemma-2b".to_string(),
+            LimitsOverride {
+                max_changed_lines: Some(200),
+                max_files_changed: Some(5),
+            },
+        );
+        let limits = effective_limits(&config, "google/gemma-2b");
+        assert_eq!(limits.max_changed_lines, 200);
+        assert_eq!(limits.max_files_changed, 5);
+    }
+
+    #[test]
+    fn effective_limits_inherits_unset_fields_per_field() {
+        // A model override that only sets max_changed_lines must inherit
+        // max_files_changed from the *project* default, not reset it to the
+        // built-in default.
+        let mut config = ProjectConfig::default();
+        config.default_limits = Limits {
+            max_changed_lines: 1000,
+            max_files_changed: 40,
+        };
+        config.model_limits.insert(
+            "qwen-32b".to_string(),
+            LimitsOverride {
+                max_changed_lines: Some(1800),
+                max_files_changed: None,
+            },
+        );
+        let limits = effective_limits(&config, "qwen-32b");
+        assert_eq!(limits.max_changed_lines, 1800, "overridden field");
+        assert_eq!(limits.max_files_changed, 40, "inherits project default");
+    }
+
+    #[test]
+    fn model_limits_deserialize_with_partial_fields() {
+        let yaml = r#"
+default_limits:
+  max_changed_lines: 1000
+  max_files_changed: 25
+model_limits:
+  "google/gemma-2b":
+    max_changed_lines: 200
+  "qwen/qwen3-coder-next":
+    max_changed_lines: 1800
+    max_files_changed: 40
+"#;
+        let config: ProjectConfig = serde_yaml::from_str(yaml).unwrap();
+        let gemma = effective_limits(&config, "google/gemma-2b");
+        assert_eq!(gemma.max_changed_lines, 200);
+        assert_eq!(gemma.max_files_changed, 25, "inherits project default");
+        let qwen = effective_limits(&config, "qwen/qwen3-coder-next");
+        assert_eq!(qwen.max_changed_lines, 1800);
+        assert_eq!(qwen.max_files_changed, 40);
     }
 
     #[test]
