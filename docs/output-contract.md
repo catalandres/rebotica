@@ -229,7 +229,7 @@ The ledger's `EnvelopeShape` enum also reserves `review_diff`, `propose_tests`, 
   "error_code": null,
   "duration_ms": 4321,
   "output_bytes": 1024,
-  "hallucination_rate": null,
+  "hallucination_rate": 0.2,
   "confidence": 7,
   "apprentice_prompt_tokens": 3421,
   "apprentice_completion_tokens": 612,
@@ -237,7 +237,14 @@ The ledger's `EnvelopeShape` enum also reserves `review_diff`, `propose_tests`, 
 }
 ```
 
-`hallucination_rate` is `null` until issue #51 ships the writer that computes it. `error_code` (snake_case `ErrorCode` name) is populated when `ok` is `false`.
+`error_code` (snake_case `ErrorCode` name) is populated when `ok` is `false`.
+
+`hallucination_rate` is the **structural** review hallucination rate (issue #51): the fraction of `findings[]` whose citations don't ground against the reviewed code. A finding is *ungrounded* when its `file` is neither in the diff's changed set nor present in the working tree, or when its `line` falls outside that file (lines are 1-indexed). The denominator is `findings.len()`. A finding with no `file` citation is treated as grounded (the rate measures *false* citations, not missing ones). It is:
+
+- a number in `[0.0, 1.0]` for successful `run.review` runs that returned at least one finding;
+- `null` for findings-free reviews (no denominator), for freeform (`--no-schema`) runs, for non-review modes (`tests` / `explain` / `patch`), and for any failed run.
+
+This is the structural half of the design definition; semantic claim-grounding (behaviour asserted but not supported by the diff hunks) is deferred to a later iteration. Aggregate it via `v_per_model_stats.avg_hallucination_rate`.
 
 `apprentice_prompt_tokens` and `apprentice_completion_tokens` come from the provider's `usage` block (LM Studio reports them; some upstream proxies strip them). Both are omitted when the provider does not report `usage`, or when the run failed before any provider response arrived. `envelope_bytes` is the byte length of the serialized `data` field returned to Prime — a proxy for Prime's roundtrip context cost (≈ bytes/4 tokens). It is populated whenever a parsed envelope was produced, including the success path and post-validation failure paths; it is `null` only on pre-chat failures. Together, these three fields are the minimum needed to compute net-token-saved estimates against the apprentice corpus; see [measurement.md](measurement.md) for the formula and its limits.
 

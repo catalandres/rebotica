@@ -1205,11 +1205,7 @@ fn handle_run_outcome(
                     false,
                     Some(failure.code),
                     started_at,
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    rebotica_run::RunCompletedMetrics::default(),
                 );
             }
             if reporter.is_json() {
@@ -2802,12 +2798,13 @@ fn envelope_kind_from_disk(path: &Path) -> Option<String> {
 /// missing rather than silently clamped to a larger byte.
 const CONFIDENCE_MAX: u64 = 10;
 
-/// Placeholder text for the apprentice card's "rejected claim" slot
-/// until the hallucination-rate writer (#51) wires real extraction.
-/// Extracted as a const so it's grep-able when that work lands.
+/// Placeholder text for the apprentice card's "rejected claim" slot.
+/// The aggregate structural hallucination rate now lands in the ledger
+/// (#51, `run_completed.hallucination_rate`), but surfacing a *specific*
+/// ungrounded finding in this card is still future work.
 const REJECTED_CLAIM_PLACEHOLDER: &str =
-    "Hallucination-rate measurement not yet enabled (tracked in #51). \
-     Until that lands, no rejected claims can be surfaced automatically.";
+    "Aggregate hallucination rate is recorded in the ledger (rbtc scorecards). \
+     Per-finding rejection surfacing in this card is not yet implemented.";
 
 fn build_apprentice_card(
     kind: &str,
@@ -4982,7 +4979,7 @@ mod tests {
         assert!(card
             .rejected_claim
             .as_deref()
-            .is_some_and(|s| s.contains("#51")));
+            .is_some_and(|s| s.contains("hallucination rate")));
     }
 
     #[test]
