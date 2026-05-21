@@ -383,6 +383,7 @@ pub async fn dispatch(
             raw_response: raw,
             extracted_via_fallback: false,
             broken_layers,
+            advisories: assembled.advisories,
         });
     }
 
