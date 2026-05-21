@@ -32,7 +32,9 @@ use std::sync::Arc;
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ReviewDiffRequest {
     /// Diff source. One of: `"working-tree"` (unstaged changes, default),
-    /// `"staged"` (index), or `"range:BASE..HEAD"` for an explicit ref range.
+    /// `"staged"` (index), `"base:REF"` (this branch vs merge-base with REF —
+    /// use `"base:main"` to review the branch; excludes work REF gained after
+    /// the fork), or `"range:BASE..HEAD"` for explicit/advanced ranges.
     #[serde(default)]
     pub source: Option<String>,
     /// Optional model alias override. Uses the project's configured route
@@ -117,31 +119,44 @@ impl ApprenticeServer {
     }
 }
 
+/// Map a `review_diff` `source` parameter to run-engine adapter args.
+///
+/// `base:REF` resolves to `--base=REF`, which the engine diffs as
+/// `merge-base(REF, HEAD)..HEAD` — the correct "review my branch" semantics
+/// that exclude work REF gained after the branch forked (#70). `range:R`
+/// passes `R` through literally for callers that want explicit two-dot or
+/// other ranges. Returns the error message on an unknown source.
+fn review_source_adapter_args(source: Option<&str>) -> Result<Vec<String>, String> {
+    match source {
+        None | Some("working-tree") => Ok(Vec::new()),
+        Some("staged") => Ok(vec!["--cached".to_string()]),
+        Some(other) => {
+            if let Some(base) = other.strip_prefix("base:") {
+                Ok(vec![format!("--base={base}")])
+            } else if let Some(range) = other.strip_prefix("range:") {
+                Ok(vec![format!("--range={range}")])
+            } else {
+                Err(format!(
+                    "unknown source '{other}'. Use 'working-tree', 'staged', 'base:REF' \
+                     (merge-base semantics — e.g. 'base:main' to review this branch), or \
+                     'range:BASE..HEAD' for an explicit range."
+                ))
+            }
+        }
+    }
+}
+
 #[tool_router]
 impl ApprenticeServer {
     #[tool(
-        description = "Review a git diff for correctness bugs, behavioral regressions, missing tests, and scope violations. Call this BEFORE writing your own review of the user's changes — the local apprentice produces structured findings with file and line citations and a confidence score. Use 'staged' for indexed changes, 'working-tree' for unstaged, or 'range:BASE..HEAD' for an explicit range. For diffs larger than the built-in defaults (1000 lines / 25 files, overridable via `.rebotica.yml`), pass `max_lines` and/or `max_files` when the user has explicitly asked for a larger review."
+        description = "Review a git diff for correctness bugs, behavioral regressions, missing tests, and scope violations. Call this BEFORE writing your own review of the user's changes — the local apprentice produces structured findings with file and line citations and a confidence score. Source options: 'working-tree' (unstaged, default), 'staged' (indexed), 'base:REF' (changes on this branch vs the merge-base with REF — use 'base:main' for the common 'review my branch' case; this correctly excludes work that REF gained after the branch forked), or 'range:BASE..HEAD' for explicit/advanced ranges (note: a literal two-dot 'main..HEAD' includes deletions of work main gained after forking — prefer 'base:main' unless you specifically want that). For diffs larger than the built-in defaults (1000 lines / 25 files, overridable via `.rebotica.yml`), pass `max_lines` and/or `max_files` when the user has explicitly asked for a larger review."
     )]
     async fn review_diff(
         &self,
         Parameters(req): Parameters<ReviewDiffRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let mut adapter_args = Vec::new();
-        match req.source.as_deref() {
-            None | Some("working-tree") => {}
-            Some("staged") => adapter_args.push("--cached".to_string()),
-            Some(other) if other.starts_with("range:") => {
-                adapter_args.push(format!("--range={}", &other["range:".len()..]));
-            }
-            Some(other) => {
-                return Err(McpError::invalid_params(
-                    format!(
-                        "unknown source '{other}'. Use 'working-tree', 'staged', or 'range:BASE..HEAD'."
-                    ),
-                    None,
-                ));
-            }
-        }
+        let mut adapter_args = review_source_adapter_args(req.source.as_deref())
+            .map_err(|message| McpError::invalid_params(message, None))?;
         if let Some(model) = req.model {
             adapter_args.push("--model".to_string());
             adapter_args.push(model);
@@ -489,6 +504,42 @@ mod tests {
         assert!(
             message.contains("not-a-real-source") || message.contains("unknown source"),
             "error message should identify the bad source: {message}"
+        );
+    }
+
+    #[test]
+    fn review_source_maps_base_to_merge_base_semantics() {
+        // #70: `base:REF` must resolve to `--base=REF`, which the engine
+        // diffs as merge-base(REF, HEAD)..HEAD — not a literal two-dot range.
+        assert_eq!(
+            review_source_adapter_args(Some("base:main")).unwrap(),
+            vec!["--base=main".to_string()]
+        );
+    }
+
+    #[test]
+    fn review_source_maps_known_sources() {
+        assert!(review_source_adapter_args(None).unwrap().is_empty());
+        assert!(review_source_adapter_args(Some("working-tree"))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            review_source_adapter_args(Some("staged")).unwrap(),
+            vec!["--cached".to_string()]
+        );
+        assert_eq!(
+            review_source_adapter_args(Some("range:abc..HEAD")).unwrap(),
+            vec!["--range=abc..HEAD".to_string()]
+        );
+    }
+
+    #[test]
+    fn review_source_rejects_unknown_and_names_base_option() {
+        let err = review_source_adapter_args(Some("bogus")).unwrap_err();
+        assert!(err.contains("bogus"), "should name the bad source: {err}");
+        assert!(
+            err.contains("base:"),
+            "error should steer callers to base:REF: {err}"
         );
     }
 }

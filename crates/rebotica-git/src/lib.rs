@@ -79,8 +79,44 @@ pub fn changed_line_count_for(source: &DiffSource) -> Result<usize> {
     changed_line_count_for_in(None, source)
 }
 
+/// Detect this repository's trunk branch — the ref the working tree is
+/// most likely diverging from. Tries, in order: the remote default branch
+/// (`origin/HEAD`), then local `main`, then local `master`. Returns `None`
+/// when none resolve (e.g. a fresh repo with no trunk yet).
+pub fn detect_trunk() -> Option<String> {
+    detect_trunk_in(None)
+}
+
+/// Count commits reachable from `HEAD` but not from `base` (`base..HEAD`).
+/// This is the number of commits unique to the current branch since it
+/// diverged from `base`.
+pub fn commits_ahead_of(base: &str) -> Result<usize> {
+    commits_ahead_of_in(None, base)
+}
+
 fn assert_repository_in(cwd: Option<&Path>) -> Result<()> {
     output_in(cwd, ["rev-parse", "--show-toplevel"]).map(|_| ())
+}
+
+fn detect_trunk_in(cwd: Option<&Path>) -> Option<String> {
+    // Remote default branch, e.g. "origin/main".
+    if let Ok(default) = output_in(cwd, ["rev-parse", "--abbrev-ref", "origin/HEAD"]) {
+        let default = default.trim();
+        if !default.is_empty() && default != "origin/HEAD" {
+            return Some(default.to_string());
+        }
+    }
+    for candidate in ["main", "master"] {
+        if output_in(cwd, ["rev-parse", "--verify", "--quiet", candidate]).is_ok() {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
+fn commits_ahead_of_in(cwd: Option<&Path>, base: &str) -> Result<usize> {
+    let count = output_in(cwd, ["rev-list", "--count", &format!("{base}..HEAD")])?;
+    Ok(count.trim().parse().unwrap_or(0))
 }
 
 fn status_short_in(cwd: Option<&Path>) -> Result<String> {
@@ -400,6 +436,47 @@ mod tests {
 
         assert!(diff.contains("+    2"));
         assert!(!diff.contains("-    9"));
+    }
+
+    #[test]
+    fn commits_ahead_of_counts_branch_commits_since_divergence() {
+        let repo = fixture_repo();
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        // Two commits on the feature branch.
+        fs::write(repo.path().join("src/lib.rs"), "pub fn answer() -> u8 {\n    2\n}\n").unwrap();
+        commit_all(repo.path(), "feature one");
+        fs::write(repo.path().join("src/lib.rs"), "pub fn answer() -> u8 {\n    3\n}\n").unwrap();
+        commit_all(repo.path(), "feature two");
+
+        assert_eq!(commits_ahead_of_in(Some(repo.path()), "main").unwrap(), 2);
+
+        // On main itself there is nothing ahead.
+        run_git(repo.path(), &["checkout", "main"]);
+        assert_eq!(commits_ahead_of_in(Some(repo.path()), "main").unwrap(), 0);
+    }
+
+    #[test]
+    fn commits_ahead_counts_branch_commits_even_when_base_advanced() {
+        // The #68/#70 scenario: branch is behind main (main moved on) but
+        // still has its own commits. The count must reflect the branch's
+        // own work, not be confused by main's newer commits.
+        let repo = fixture_repo();
+        run_git(repo.path(), &["checkout", "-b", "feature"]);
+        fs::write(repo.path().join("src/lib.rs"), "pub fn answer() -> u8 {\n    2\n}\n").unwrap();
+        commit_all(repo.path(), "feature change");
+
+        run_git(repo.path(), &["checkout", "main"]);
+        fs::write(repo.path().join("src/other.rs"), "pub fn x() {}\n").unwrap();
+        commit_all(repo.path(), "main advances");
+
+        run_git(repo.path(), &["checkout", "feature"]);
+        assert_eq!(commits_ahead_of_in(Some(repo.path()), "main").unwrap(), 1);
+    }
+
+    #[test]
+    fn detect_trunk_finds_main() {
+        let repo = fixture_repo();
+        assert_eq!(detect_trunk_in(Some(repo.path())).as_deref(), Some("main"));
     }
 
     #[test]
