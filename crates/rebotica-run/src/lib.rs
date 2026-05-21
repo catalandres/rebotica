@@ -47,6 +47,10 @@ pub struct RunSuccess {
     /// Plugin layers that were broken and skipped (resolution still succeeded
     /// via fall-through).  Usually empty.
     pub broken_layers: Vec<rebotica_core::run::BrokenPluginLayer>,
+    /// Human-facing coverage notes from input selection (e.g. diff source
+    /// reviewed, warning that committed branch work is excluded). The CLI
+    /// renders these; they never reach the apprentice.
+    pub advisories: Vec<String>,
 }
 
 /// A failed run dispatch.
@@ -522,6 +526,7 @@ pub async fn dispatch(
         raw_response: raw,
         extracted_via_fallback,
         broken_layers,
+        advisories: assembled.advisories,
     })
 }
 
@@ -1068,6 +1073,7 @@ struct AssembledRun {
     prompt: String,
     selected_skills: Vec<ResolvedSkill>,
     options: RunEngineOptions,
+    advisories: Vec<String>,
 }
 
 /// Lightweight argument parser used by the adapter chain.
@@ -1165,6 +1171,10 @@ struct AdapterOutput {
     envelope_text: String,
     touched_files: Vec<String>,
     forbidden_paths: Vec<String>,
+    /// Human-facing coverage notes (e.g. which diff source was reviewed,
+    /// warnings that committed branch work isn't included). Surfaced by
+    /// the CLI; never sent to the apprentice.
+    advisories: Vec<String>,
 }
 
 // ─── Assemble run ─────────────────────────────────────────────────────────────
@@ -1192,6 +1202,7 @@ fn assemble_run(
     let mut touched_files = Vec::new();
     let mut forbidden_paths = loaded.config.forbidden_paths.clone();
     let mut selected_skills = Vec::new();
+    let mut advisories = Vec::new();
 
     for input in &plugin.manifest.inputs {
         match input.as_str() {
@@ -1200,12 +1211,14 @@ fn assemble_run(
                 envelope_text = diff.envelope_text;
                 touched_files.extend(diff.touched_files);
                 blocks.extend(diff.blocks);
+                advisories.extend(diff.advisories);
             }
             "files" => {
                 let files = files_adapter(cwd, &loaded, &plugin.mode, &mut cursor)?;
                 envelope_text = files.envelope_text;
                 touched_files.extend(files.touched_files);
                 blocks.extend(files.blocks);
+                advisories.extend(files.advisories);
             }
             "task_envelope" => {
                 let task = task_envelope_adapter(cwd, &loaded, &mut cursor)?;
@@ -1213,6 +1226,7 @@ fn assemble_run(
                 forbidden_paths.extend(task.forbidden_paths);
                 touched_files.extend(task.touched_files);
                 blocks.extend(task.blocks);
+                advisories.extend(task.advisories);
             }
             "skills" => {
                 let skills = skills_adapter(cwd, &mut cursor)?;
@@ -1248,6 +1262,7 @@ fn assemble_run(
         prompt: blocks.join("\n\n"),
         selected_skills,
         options,
+        advisories,
     })
 }
 
@@ -1386,6 +1401,27 @@ fn diff_adapter(
     );
     envelope.max_files_changed = effective_max_files;
     envelope.max_changed_lines = effective_max_lines;
+    // The ahead-of-trunk guard only applies to the implicit sources that
+    // see uncommitted work only. Explicit --base/--range already include
+    // committed history, so a warning there would be noise.
+    let implicit_source = matches!(
+        diff_source,
+        rebotica_git::DiffSource::WorkingTree | rebotica_git::DiffSource::Cached
+    );
+    let ahead_of_trunk = if implicit_source {
+        rebotica_git::detect_trunk().and_then(|trunk| {
+            let ahead = rebotica_git::commits_ahead_of(&trunk).unwrap_or(0);
+            (ahead > 0).then_some((trunk, ahead))
+        })
+    } else {
+        None
+    };
+    let advisories = diff_coverage_advisories(
+        changed_files.len(),
+        changed_lines,
+        &diff_source_description,
+        ahead_of_trunk,
+    );
     let envelope_text = envelope.to_yaml().map_err(|error| {
         adapter_failure(
             ErrorCode::Internal,
@@ -1457,7 +1493,38 @@ fn diff_adapter(
         envelope_text,
         touched_files: changed_files,
         forbidden_paths: Vec::new(),
+        advisories,
     })
+}
+
+/// Build human-facing coverage notes for a diff review. Always reports
+/// what was reviewed; when `ahead_of_trunk` is `Some((trunk, n))` it also
+/// warns that HEAD carries `n` committed commits the diff doesn't include
+/// (the silent-narrow-coverage failure mode from #68). The caller decides
+/// whether to compute that (only meaningful for implicit working-tree /
+/// staged sources).
+fn diff_coverage_advisories(
+    file_count: usize,
+    line_count: usize,
+    source_description: &str,
+    ahead_of_trunk: Option<(String, usize)>,
+) -> Vec<String> {
+    let files_word = if file_count == 1 { "file" } else { "files" };
+    let lines_word = if line_count == 1 { "line" } else { "lines" };
+    let mut advisories = vec![
+        format!("Reviewed: {file_count} {files_word}, {line_count} {lines_word}"),
+        format!("Source:   {source_description}"),
+    ];
+
+    if let Some((trunk, ahead)) = ahead_of_trunk {
+        let commits_word = if ahead == 1 { "commit" } else { "commits" };
+        advisories.push(format!(
+            "⚠ HEAD is {ahead} {commits_word} ahead of '{trunk}' with committed changes NOT in this review."
+        ));
+        advisories.push(format!("  Re-run with --base {trunk} to review them."));
+    }
+
+    advisories
 }
 
 fn files_adapter(
@@ -1532,6 +1599,7 @@ fn files_adapter(
         envelope_text,
         touched_files: files,
         forbidden_paths: Vec::new(),
+        advisories: Vec::new(),
     })
 }
 
@@ -1599,6 +1667,7 @@ fn task_envelope_adapter(
         envelope_text,
         touched_files: allowed_files,
         forbidden_paths,
+        advisories: Vec::new(),
     })
 }
 
@@ -1631,4 +1700,45 @@ fn run_guard_adapter(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coverage_advisories_report_counts_and_source_with_pluralization() {
+        let a = diff_coverage_advisories(1, 1, "unstaged working tree changes (git diff)", None);
+        assert_eq!(a[0], "Reviewed: 1 file, 1 line");
+        assert!(a[1].contains("unstaged working tree"));
+        assert_eq!(a.len(), 2, "no guard line when ahead_of_trunk is None");
+
+        let plural = diff_coverage_advisories(3, 42, "x", None);
+        assert_eq!(plural[0], "Reviewed: 3 files, 42 lines");
+    }
+
+    #[test]
+    fn coverage_advisories_warn_when_ahead_of_trunk() {
+        // The #68 failure mode: working-tree review while committed branch
+        // work sits ahead of trunk. The guard must name the trunk and the
+        // --base remedy.
+        let a = diff_coverage_advisories(
+            1,
+            3,
+            "unstaged working tree changes (git diff)",
+            Some(("main".to_string(), 5)),
+        );
+        let joined = a.join("\n");
+        assert!(joined.contains("5 commits ahead of 'main'"), "got: {joined}");
+        assert!(joined.contains("NOT in this review"), "got: {joined}");
+        assert!(joined.contains("--base main"), "should name the remedy: {joined}");
+    }
+
+    #[test]
+    fn coverage_advisories_singular_commit() {
+        let a = diff_coverage_advisories(0, 0, "x", Some(("origin/main".to_string(), 1)));
+        let joined = a.join("\n");
+        assert!(joined.contains("1 commit ahead"), "got: {joined}");
+        assert!(joined.contains("--base origin/main"), "got: {joined}");
+    }
 }

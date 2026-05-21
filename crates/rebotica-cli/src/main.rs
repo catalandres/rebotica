@@ -1167,6 +1167,7 @@ fn handle_run_outcome(
         RunOutcome::Success(success) => {
             // Emit broken-layer warnings on stderr for any fall-through layers.
             emit_broken_layer_reasons(&success.broken_layers, reporter_mode, true);
+            emit_coverage_advisories(&success.advisories, reporter_mode);
             if success.extracted_via_fallback && reporter_mode != ReporterMode::Quiet {
                 eprintln!(
                     "note: {} response had no parseable fenced ```json block; used the last balanced {{...}}. consider tightening the prompt.",
@@ -1235,6 +1236,22 @@ fn handle_run_outcome(
             }
         }
     }
+}
+
+/// Render diff-coverage advisories (what was reviewed + ahead-of-trunk
+/// warning) as a compact box on stderr. Human, non-quiet mode only — JSON
+/// consumers read the same data from the run directory / ledger, and quiet
+/// mode suppresses all advisory chatter.
+fn emit_coverage_advisories(advisories: &[String], reporter_mode: ReporterMode) {
+    if advisories.is_empty() || reporter_mode != ReporterMode::Human {
+        return;
+    }
+    let rule = "═".repeat(59);
+    eprintln!("{rule}");
+    for line in advisories {
+        eprintln!(" {line}");
+    }
+    eprintln!("{rule}");
 }
 
 fn emit_broken_layer_reasons(
