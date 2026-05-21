@@ -2797,6 +2797,26 @@ fn build_apprentice_card(
     parsed: Option<&serde_json::Value>,
     apprentice_model: Option<String>,
 ) -> ApprenticeCard {
+    // Freeform runs (`--no-schema`) carry only `{"raw_response": "..."}`
+    // in `parsed-output.json`. They have no confidence/next_action/findings
+    // by construction — surface a snippet of the raw response instead.
+    if let Some(base_kind) = kind.strip_suffix(".freeform") {
+        let useful_finding = parsed
+            .and_then(|v| v.get("raw_response"))
+            .and_then(|v| v.as_str())
+            .map(|raw| {
+                let snippet = first_meaningful_snippet(raw);
+                format!("Freeform {base_kind} response (no schema):\n{snippet}")
+            });
+        return ApprenticeCard {
+            apprentice_model,
+            confidence: None,
+            useful_finding,
+            rejected_claim: None,
+            recommended_next: None,
+        };
+    }
+
     let confidence = parsed
         .and_then(|v| v.get("confidence"))
         .and_then(|v| v.as_u64())
@@ -2897,6 +2917,30 @@ fn first_sentence(text: &str) -> &str {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(text)
+}
+
+/// Pick a short, human-readable snippet from raw freeform model output.
+/// Strips leading markdown fence delimiters and frontmatter markers so
+/// the card doesn't lead with ``` ```json ``` or a lone `{` when the
+/// model wraps its reply.
+fn first_meaningful_snippet(text: &str) -> String {
+    const SNIPPET_CHARS: usize = 240;
+    let body: String = text
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| {
+            line.is_empty() || line.starts_with("```") || line.starts_with("---") || *line == "{"
+        })
+        .take_while(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let snippet = if body.is_empty() { text.trim() } else { &body };
+    if snippet.chars().count() <= SNIPPET_CHARS {
+        snippet.to_string()
+    } else {
+        let truncated: String = snippet.chars().take(SNIPPET_CHARS).collect();
+        format!("{truncated}…")
+    }
 }
 
 fn render_apprentice_card_human(data: &RunsShowData) -> String {
@@ -5005,6 +5049,62 @@ mod tests {
             finding.contains("no files_touched"),
             "fallback should call out empty list; got: {finding}"
         );
+    }
+
+    #[test]
+    fn apprentice_card_renders_freeform_runs_with_raw_response_snippet() {
+        // `--no-schema` runs (#66) bypass the schema gate and persist a
+        // `{ "raw_response": "..." }` object. The card must extract a
+        // snippet rather than the structured fields it can't have.
+        let parsed = serde_json::json!({
+            "raw_response": "Looks fine overall. One concern: the new helper has no test.\nFollow-up: add a unit test.",
+        });
+        let card = build_apprentice_card("run.review.freeform", Some(&parsed), Some("gemma".into()));
+        assert!(card.confidence.is_none());
+        assert!(card.recommended_next.is_none(), "no next_action in freeform");
+        assert!(card.rejected_claim.is_none(), "freeform doesn't claim hallucination tracking");
+        let finding = card.useful_finding.expect("should render a snippet");
+        assert!(
+            finding.contains("Freeform run.review response"),
+            "label should call out freeform mode: {finding}"
+        );
+        assert!(
+            finding.contains("Looks fine overall"),
+            "snippet should appear: {finding}"
+        );
+    }
+
+    #[test]
+    fn freeform_snippet_skips_leading_fence_and_frontmatter_markers() {
+        // Models often wrap output in ```json or --- prefaces. The card
+        // should reach the first real line of content for the snippet.
+        let parsed = serde_json::json!({
+            "raw_response": "---\n```json\n{\"actual\": \"content here\"}\n```\n",
+        });
+        let card = build_apprentice_card("run.review.freeform", Some(&parsed), None);
+        let finding = card.useful_finding.expect("snippet present");
+        assert!(
+            finding.contains("actual"),
+            "snippet should skip wrapper lines: {finding}"
+        );
+        assert!(
+            !finding.contains("```json"),
+            "snippet must not lead with the fence marker: {finding}"
+        );
+    }
+
+    #[test]
+    fn apprentice_card_handles_freeform_without_raw_response() {
+        // Defensive: if a future writer forgets to populate raw_response,
+        // the card should still not panic and should show no finding. All
+        // schema-only fields stay `None` because freeform runs have no
+        // confidence/next_action/rejected-claim concept.
+        let parsed = serde_json::json!({ "other": "fields" });
+        let card = build_apprentice_card("run.review.freeform", Some(&parsed), None);
+        assert!(card.useful_finding.is_none());
+        assert!(card.confidence.is_none());
+        assert!(card.recommended_next.is_none());
+        assert!(card.rejected_claim.is_none());
     }
 
     #[test]
