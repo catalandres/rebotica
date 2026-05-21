@@ -36,13 +36,19 @@ pub enum RunOutcome {
 /// A successful run dispatch.
 pub struct RunSuccess {
     pub run: rebotica_runlog::PersistedRun,
-    /// e.g. `"run.review"`
+    /// e.g. `"run.review"` for structured runs or `"run.review.freeform"`
+    /// when the caller passed `--no-schema` (#66). Consumers should branch
+    /// on the `.freeform` suffix before reading `data`.
     pub kind: String,
-    /// Schema-validated model output payload.
+    /// For structured runs (`kind` without `.freeform`): the schema-validated
+    /// model output payload. For freeform runs (`kind` ends with `.freeform`):
+    /// `{ "raw_response": "<raw model text>" }` only — no other fields are
+    /// guaranteed.
     pub data: serde_json::Value,
     /// Raw model response text.
     pub raw_response: String,
-    /// `true` when the balanced-brace fallback extractor was used.
+    /// `true` when the balanced-brace fallback extractor was used. Always
+    /// `false` for freeform runs (extraction is skipped entirely).
     pub extracted_via_fallback: bool,
     /// Plugin layers that were broken and skipped (resolution still succeeded
     /// via fall-through).  Usually empty.
@@ -161,15 +167,26 @@ pub async fn dispatch(
         }
     };
 
+    // Once adapter parsing has resolved `--no-schema`, every downstream
+    // signal (run_started, run_completed, envelope kind, failure replies)
+    // carries the `.freeform` suffix so freeform runs aggregate
+    // separately from structured ones (#66).
+    let effective_kind = if assembled.options.freeform {
+        format!("{}.freeform", plugin.manifest.kind)
+    } else {
+        plugin.manifest.kind.clone()
+    };
+    let freeform = assembled.options.freeform;
+
     let loaded = match LoadedConfig::read_from(cwd) {
         Ok(loaded) => loaded,
         Err(error) => {
             let message = format!("{error:#}");
-            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
+            let run_id = record_rejection(&effective_kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Config,
                 message,
                 details: None,
@@ -183,11 +200,11 @@ pub async fn dispatch(
         Ok(model) => model,
         Err(error) => {
             let message = error.to_string();
-            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
+            let run_id = record_rejection(&effective_kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Config,
                 message,
                 details: None,
@@ -200,11 +217,11 @@ pub async fn dispatch(
         Ok(settings) => settings,
         Err(error) => {
             let message = error.to_string();
-            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
+            let run_id = record_rejection(&effective_kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Config,
                 message,
                 details: None,
@@ -217,11 +234,11 @@ pub async fn dispatch(
         Ok(provider) => provider,
         Err(error) => {
             let message = error.to_string();
-            let run_id = record_rejection(&plugin.manifest.kind, ErrorCode::Config, &message, None);
+            let run_id = record_rejection(&effective_kind, ErrorCode::Config, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Config,
                 message,
                 details: None,
@@ -239,12 +256,11 @@ pub async fn dispatch(
         Ok(persisted) => persisted,
         Err(error) => {
             let message = format!("failed to create run log: {error:#}");
-            let run_id =
-                record_rejection(&plugin.manifest.kind, ErrorCode::Internal, &message, None);
+            let run_id = record_rejection(&effective_kind, ErrorCode::Internal, &message, None);
             return RunOutcome::Failure(RunFailure {
                 run: None,
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Internal,
                 message,
                 details: None,
@@ -258,7 +274,7 @@ pub async fn dispatch(
         return RunOutcome::Failure(RunFailure {
             run: Some(persisted),
             run_id,
-            kind: plugin.manifest.kind.clone(),
+            kind: effective_kind,
             code: ErrorCode::Internal,
             message: format!("failed to persist selected skills: {error:#}"),
             details: None,
@@ -268,7 +284,7 @@ pub async fn dispatch(
 
     emit_run_started_event(
         &persisted.id,
-        &plugin.manifest.kind,
+        &effective_kind,
         &model,
         &settings.name,
         plugin.manifest.schema_version,
@@ -297,7 +313,7 @@ pub async fn dispatch(
             // produced. All three new metrics fields stay `None`.
             emit_run_completed_event(
                 &persisted.id,
-                &plugin.manifest.kind,
+                &effective_kind,
                 "unknown",
                 false,
                 Some(code),
@@ -312,7 +328,7 @@ pub async fn dispatch(
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code,
                 message: error.to_string(),
                 details: Some(details),
@@ -333,6 +349,43 @@ pub async fn dispatch(
         .display()
         .to_string();
 
+    if freeform {
+        let data = serde_json::json!({ "raw_response": raw });
+        let _ = rebotica_runlog::write_parsed_output(&persisted, &data);
+        {
+            use rebotica_core::output::Envelope;
+            let envelope = Envelope::builder(&effective_kind)
+                .command(&command)
+                .started_at(started_at)
+                .run_id(persisted.id.as_str())
+                .data(&data)
+                .build();
+            let _ = rebotica_runlog::write_envelope(&persisted, &envelope);
+        }
+        let envelope_bytes = serde_json::to_string(&data).ok().map(|s| s.len() as u64);
+        emit_run_completed_event(
+            &persisted.id,
+            &effective_kind,
+            &model,
+            true,
+            None,
+            started_at,
+            Some(raw.len() as u64),
+            None,
+            apprentice_prompt_tokens,
+            apprentice_completion_tokens,
+            envelope_bytes,
+        );
+        return RunOutcome::Success(RunSuccess {
+            run: persisted,
+            kind: effective_kind,
+            data,
+            raw_response: raw,
+            extracted_via_fallback: false,
+            broken_layers,
+        });
+    }
+
     let extracted = match extract_json_payload(&raw) {
         Ok(extracted) => extracted,
         Err(error) => {
@@ -345,7 +398,7 @@ pub async fn dispatch(
             let _ = rebotica_runlog::write_parse_failure(&persisted, &details);
             emit_run_completed_event(
                 &persisted.id,
-                &plugin.manifest.kind,
+                &effective_kind,
                 "unknown",
                 false,
                 Some(ErrorCode::OutputInvalid),
@@ -360,7 +413,7 @@ pub async fn dispatch(
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::OutputInvalid,
                 message: format!(
                     "model output did not contain parseable JSON ({}): see model-response.md",
@@ -380,7 +433,7 @@ pub async fn dispatch(
         Err(error) => {
             emit_run_completed_event(
                 &persisted.id,
-                &plugin.manifest.kind,
+                &effective_kind,
                 "unknown",
                 false,
                 Some(ErrorCode::Internal),
@@ -395,7 +448,7 @@ pub async fn dispatch(
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Internal,
                 message: format!("failed to build schema validator: {error:#}"),
                 details: None,
@@ -409,7 +462,7 @@ pub async fn dispatch(
         Err(error) => {
             emit_run_completed_event(
                 &persisted.id,
-                &plugin.manifest.kind,
+                &effective_kind,
                 "unknown",
                 false,
                 Some(ErrorCode::Internal),
@@ -424,7 +477,7 @@ pub async fn dispatch(
             return RunOutcome::Failure(RunFailure {
                 run: Some(persisted),
                 run_id,
-                kind: plugin.manifest.kind.clone(),
+                kind: effective_kind,
                 code: ErrorCode::Internal,
                 message: format!("schema validation failed: {error:#}"),
                 details: None,
@@ -447,7 +500,7 @@ pub async fn dispatch(
         let _ = rebotica_runlog::write_parse_failure(&persisted, &details);
         emit_run_completed_event(
             &persisted.id,
-            &plugin.manifest.kind,
+            &effective_kind,
             "unknown",
             false,
             Some(ErrorCode::OutputInvalid),
@@ -470,7 +523,7 @@ pub async fn dispatch(
         return RunOutcome::Failure(RunFailure {
             run: Some(persisted),
             run_id,
-            kind: plugin.manifest.kind.clone(),
+            kind: effective_kind,
             code: ErrorCode::OutputInvalid,
             message,
             details: Some(details),
@@ -485,7 +538,7 @@ pub async fn dispatch(
     // the real command string and run_id.
     {
         use rebotica_core::output::Envelope;
-        let envelope = Envelope::builder(&plugin.manifest.kind)
+        let envelope = Envelope::builder(&effective_kind)
             .command(&command)
             .started_at(started_at)
             .run_id(persisted.id.as_str())
@@ -503,7 +556,7 @@ pub async fn dispatch(
 
     emit_run_completed_event(
         &persisted.id,
-        &plugin.manifest.kind,
+        &effective_kind,
         &model,
         true,
         None,
@@ -521,7 +574,7 @@ pub async fn dispatch(
 
     RunOutcome::Success(RunSuccess {
         run: persisted,
-        kind: plugin.manifest.kind.clone(),
+        kind: effective_kind,
         data: extracted.value,
         raw_response: raw,
         extracted_via_fallback,
@@ -1055,6 +1108,11 @@ struct RunEngineOptions {
     provider: ProviderArgs,
     model: Option<String>,
     temperature: f64,
+    /// `--no-schema`: skip JSON extraction and schema validation; persist
+    /// the raw apprentice response under a `*.freeform` envelope kind so
+    /// Prime can still use models that can't sustain structured output.
+    /// See #66 for the motivating bypass behaviour this closes.
+    freeform: bool,
 }
 
 impl Default for RunEngineOptions {
@@ -1063,6 +1121,7 @@ impl Default for RunEngineOptions {
             provider: ProviderArgs::default(),
             model: None,
             temperature: 0.0,
+            freeform: false,
         }
     }
 }
@@ -1290,6 +1349,7 @@ fn parse_run_engine_options(
             )
         })?;
     }
+    options.freeform = cursor.take_flag("--no-schema");
     Ok(options)
 }
 
