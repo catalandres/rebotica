@@ -1,111 +1,219 @@
-//! Apprentice ledger — SQLite-backed event log that lets v0.3+ commands
+//! Apprentice ledger — DuckDB-backed event log that lets v0.3+ commands
 //! answer "what has the apprentice been doing and how is it going."
 //!
-//! The ledger lives at `~/.rebotica/ledger.db`. It is an append-only event
-//! store; the [`Schema`] never alters existing rows. Schema changes ship as
-//! a new `user_version` bump with a forward-only migration.
+//! The ledger lives at `~/.rebotica/ledger.duckdb`. It is an append-only
+//! event store; the schema never alters existing rows. Schema changes ship
+//! as a `schema_version` bump (tracked in `ledger_meta`) with a
+//! forward-only migration.
+//!
+//! Ledgers created before v0.3's DuckDB switch live at `~/.rebotica/ledger.db`
+//! (SQLite). On first open, [`open`] migrates that file forward via DuckDB's
+//! sqlite extension and backs the original up as `ledger.db.sqlite-backup`.
 //!
 //! Per-run files under `~/.rebotica/runs/<id>/` remain the audit trail; the
 //! ledger is the queryable summary.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use duckdb::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{make_id, root, Disposition};
 
 /// Current schema version. Bump and add a migration when the table or view
 /// shape changes incompatibly.
-pub const CURRENT_USER_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
 
-/// Path to the apprentice ledger database (`~/.rebotica/ledger.db`).
+/// Path to the apprentice ledger database (`~/.rebotica/ledger.duckdb`).
 pub fn path() -> PathBuf {
+    root().join("ledger.duckdb")
+}
+
+/// Path to the pre-v0.3 SQLite ledger, migrated forward on first open.
+fn legacy_sqlite_path() -> PathBuf {
     root().join("ledger.db")
 }
 
 /// Open the ledger, creating the database and applying migrations as needed.
 ///
 /// Safe to call on every event write: schema setup is idempotent and runs
-/// in microseconds once the file exists.
+/// in microseconds once the file exists. On the very first open after the
+/// DuckDB switch, a pre-existing SQLite `ledger.db` is migrated forward
+/// (best-effort: a failure logs a warning and starts with an empty DuckDB
+/// ledger, leaving the SQLite file untouched for manual recovery).
 pub fn open() -> Result<Connection> {
     let db_path = path();
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let conn = Connection::open(&db_path)
-        .with_context(|| format!("failed to open ledger at {}", db_path.display()))?;
-    apply_migrations(&conn)?;
+    let legacy = legacy_sqlite_path();
+    let needs_migration = !db_path.exists() && legacy.is_file();
+
+    let conn = open_with_retry(&db_path)?;
+    ensure_schema(&conn)?;
+
+    if needs_migration {
+        match migrate_from_sqlite(&conn, &legacy) {
+            Ok(n) => {
+                let backup = root().join("ledger.db.sqlite-backup");
+                match std::fs::rename(&legacy, &backup) {
+                    Ok(()) => eprintln!(
+                        "rebotica: migrated {n} ledger event(s) from SQLite to DuckDB; \
+                         original preserved at {}",
+                        backup.display()
+                    ),
+                    Err(error) => eprintln!(
+                        "rebotica: migrated {n} ledger event(s) from SQLite to DuckDB, but could \
+                         not rename the original ({error}); it remains at {} and will not be \
+                         re-imported (DuckDB ledger now exists).",
+                        legacy.display()
+                    ),
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: could not migrate the SQLite ledger to DuckDB ({error:#}); \
+                     starting with an empty DuckDB ledger. The old data is preserved at {} \
+                     — retry once the duckdb sqlite extension is reachable.",
+                    legacy.display()
+                );
+            }
+        }
+    }
+
     Ok(conn)
 }
 
-fn apply_migrations(conn: &Connection) -> Result<()> {
-    let version: u32 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .context("failed to read PRAGMA user_version")?;
+/// Number of times to retry acquiring the DuckDB file lock before giving up.
+const OPEN_RETRY_ATTEMPTS: usize = 6;
 
-    if version > CURRENT_USER_VERSION {
+/// Open the DuckDB ledger, retrying with exponential backoff while another
+/// process holds the file lock.
+///
+/// DuckDB takes an exclusive lock per read-write connection (unlike SQLite's
+/// WAL, which allowed concurrent readers). rbtc opens the ledger in short
+/// write-then-close bursts, so brief contention — a `compare` loop, the MCP
+/// server writing while the CLI reads — resolves within a few milliseconds.
+fn open_with_retry(db_path: &Path) -> Result<Connection> {
+    let mut delay = std::time::Duration::from_millis(25);
+    for attempt in 0..OPEN_RETRY_ATTEMPTS {
+        match Connection::open(db_path) {
+            Ok(conn) => return Ok(conn),
+            Err(error) if attempt + 1 < OPEN_RETRY_ATTEMPTS && is_lock_contention(&error) => {
+                std::thread::sleep(delay);
+                delay = delay.saturating_mul(2);
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to open ledger at {}", db_path.display()));
+            }
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
+/// Whether a DuckDB open error is transient file-lock contention worth
+/// retrying (as opposed to a real corruption/permission failure).
+fn is_lock_contention(error: &duckdb::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("lock")
+        || message.contains("conflict")
+        || message.contains("being used")
+        || message.contains("busy")
+}
+
+fn ensure_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS ledger_meta (key VARCHAR PRIMARY KEY, value BIGINT);",
+    )
+    .context("failed to ensure ledger_meta table")?;
+
+    let version = schema_version(conn)?;
+    if version > CURRENT_SCHEMA_VERSION {
         anyhow::bail!(
-            "ledger user_version is {version}, this build supports up to {CURRENT_USER_VERSION}; \
+            "ledger schema_version is {version}, this build supports up to {CURRENT_SCHEMA_VERSION}; \
              upgrade rbtc to read this ledger",
         );
     }
-
     if version < 1 {
         apply_v1(conn)?;
+        set_schema_version(conn, 1)?;
     }
+    Ok(())
+}
 
+/// Read the recorded schema version, or 0 when the ledger is brand new.
+fn schema_version(conn: &Connection) -> Result<i64> {
+    let mut stmt = conn
+        .prepare("SELECT value FROM ledger_meta WHERE key = 'schema_version'")
+        .context("failed to prepare schema_version query")?;
+    let mut rows = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .context("failed to query schema_version")?;
+    let value = rows
+        .next()
+        .transpose()
+        .context("failed to read schema_version row")?;
+    Ok(value.unwrap_or(0))
+}
+
+fn set_schema_version(conn: &Connection, version: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO ledger_meta (key, value) VALUES ('schema_version', ?) \
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        params![version],
+    )
+    .context("failed to set schema_version")?;
     Ok(())
 }
 
 fn apply_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
+        CREATE SEQUENCE IF NOT EXISTS ledger_events_id_seq START 1;
+
         CREATE TABLE IF NOT EXISTS ledger_events (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts           TEXT    NOT NULL,
-            run_id       TEXT,
-            event_type   TEXT    NOT NULL,
-            payload_json TEXT    NOT NULL
+            id           BIGINT  PRIMARY KEY DEFAULT nextval('ledger_events_id_seq'),
+            ts           VARCHAR NOT NULL,
+            run_id       VARCHAR,
+            event_type   VARCHAR NOT NULL,
+            payload_json VARCHAR NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS ledger_events_run_id_idx ON ledger_events(run_id);
         CREATE INDEX IF NOT EXISTS ledger_events_type_idx ON ledger_events(event_type);
         CREATE INDEX IF NOT EXISTS ledger_events_ts_idx ON ledger_events(ts);
 
-        DROP VIEW IF EXISTS v_per_model_stats;
-        CREATE VIEW v_per_model_stats AS
+        CREATE OR REPLACE VIEW v_per_model_stats AS
         SELECT
-            json_extract(payload_json, '$.model')          AS model,
-            json_extract(payload_json, '$.envelope_shape') AS envelope_shape,
-            COUNT(*)                                       AS completed_runs,
-            SUM(CASE WHEN json_extract(payload_json, '$.ok') = 1 THEN 1 ELSE 0 END) AS ok_runs,
-            AVG(json_extract(payload_json, '$.confidence'))         AS avg_confidence,
-            AVG(json_extract(payload_json, '$.hallucination_rate')) AS avg_hallucination_rate,
-            MAX(ts)                                                  AS latest_ts
+            json_extract_string(payload_json, '$.model')          AS model,
+            json_extract_string(payload_json, '$.envelope_shape') AS envelope_shape,
+            COUNT(*)                                               AS completed_runs,
+            SUM(CASE WHEN json_extract_string(payload_json, '$.ok') = 'true' THEN 1 ELSE 0 END) AS ok_runs,
+            AVG(CAST(json_extract_string(payload_json, '$.confidence') AS DOUBLE))         AS avg_confidence,
+            AVG(CAST(json_extract_string(payload_json, '$.hallucination_rate') AS DOUBLE)) AS avg_hallucination_rate,
+            MAX(ts)                                                AS latest_ts
         FROM ledger_events
         WHERE event_type = 'run_completed'
         GROUP BY model, envelope_shape;
 
-        DROP VIEW IF EXISTS v_per_envelope_stats;
-        CREATE VIEW v_per_envelope_stats AS
+        CREATE OR REPLACE VIEW v_per_envelope_stats AS
         SELECT
-            json_extract(payload_json, '$.envelope_shape') AS envelope_shape,
-            COUNT(*)                                       AS completed_runs,
-            SUM(CASE WHEN json_extract(payload_json, '$.ok') = 1 THEN 1 ELSE 0 END) AS ok_runs,
-            AVG(json_extract(payload_json, '$.confidence'))         AS avg_confidence,
-            AVG(json_extract(payload_json, '$.hallucination_rate')) AS avg_hallucination_rate
+            json_extract_string(payload_json, '$.envelope_shape') AS envelope_shape,
+            COUNT(*)                                               AS completed_runs,
+            SUM(CASE WHEN json_extract_string(payload_json, '$.ok') = 'true' THEN 1 ELSE 0 END) AS ok_runs,
+            AVG(CAST(json_extract_string(payload_json, '$.confidence') AS DOUBLE))         AS avg_confidence,
+            AVG(CAST(json_extract_string(payload_json, '$.hallucination_rate') AS DOUBLE)) AS avg_hallucination_rate
         FROM ledger_events
         WHERE event_type = 'run_completed'
         GROUP BY envelope_shape;
 
-        DROP VIEW IF EXISTS v_disposition_breakdown;
-        CREATE VIEW v_disposition_breakdown AS
+        CREATE OR REPLACE VIEW v_disposition_breakdown AS
         SELECT
-            json_extract(payload_json, '$.disposition') AS disposition,
-            COUNT(*)                                    AS rows_count
+            json_extract_string(payload_json, '$.disposition') AS disposition,
+            COUNT(*)                                            AS rows_count
         FROM ledger_events
         WHERE event_type = 'prime_disposition'
         GROUP BY disposition;
@@ -113,10 +221,32 @@ fn apply_v1(conn: &Connection) -> Result<()> {
     )
     .context("failed to apply ledger v1 schema")?;
 
-    conn.pragma_update(None, "user_version", 1u32)
-        .context("failed to set user_version to 1")?;
-
     Ok(())
+}
+
+/// Copy events forward from a pre-v0.3 SQLite ledger using DuckDB's sqlite
+/// extension. Returns the post-import row count. Errors propagate so the
+/// caller can degrade gracefully (the SQLite file is left in place).
+fn migrate_from_sqlite(conn: &Connection, sqlite_path: &Path) -> Result<usize> {
+    conn.execute_batch("INSTALL sqlite; LOAD sqlite;")
+        .context("failed to load the duckdb sqlite extension")?;
+    // `sqlite_path` is always rebotica's own `~/.rebotica/ledger.db`, never
+    // user input. The single-quote escape guards against an unusual home dir.
+    let escaped = sqlite_path.display().to_string().replace('\'', "''");
+    conn.execute_batch(&format!(
+        "ATTACH '{escaped}' AS legacy_sqlite (TYPE SQLITE, READ_ONLY);"
+    ))
+    .context("failed to attach the legacy SQLite ledger")?;
+    conn.execute_batch(
+        "INSERT INTO ledger_events (ts, run_id, event_type, payload_json) \
+         SELECT ts, run_id, event_type, payload_json \
+         FROM legacy_sqlite.ledger_events ORDER BY id;",
+    )
+    .context("failed to copy events from the legacy SQLite ledger")?;
+    let imported = count_with_conn(conn)?;
+    conn.execute_batch("DETACH legacy_sqlite;")
+        .context("failed to detach the legacy SQLite ledger")?;
+    Ok(imported as usize)
 }
 
 /// Event kinds written to the ledger. Each ships a typed payload via the
@@ -346,26 +476,33 @@ fn insert_event(
     ts: DateTime<Utc>,
 ) -> Result<i64> {
     let payload = serde_json::to_string(event).context("failed to serialize ledger payload")?;
-    conn.execute(
-        "INSERT INTO ledger_events (ts, run_id, event_type, payload_json) VALUES (?1, ?2, ?3, ?4)",
-        params![
-            ts.to_rfc3339(),
-            run_id,
-            event.event_type().as_str(),
-            payload
-        ],
-    )
-    .context("failed to insert ledger event")?;
-    Ok(conn.last_insert_rowid())
+    // DuckDB has no `last_insert_rowid`; `RETURNING` hands back the
+    // sequence-assigned id directly.
+    let id: i64 = conn
+        .query_row(
+            "INSERT INTO ledger_events (ts, run_id, event_type, payload_json) \
+             VALUES (?, ?, ?, ?) RETURNING id",
+            params![
+                ts.to_rfc3339(),
+                run_id,
+                event.event_type().as_str(),
+                payload
+            ],
+            |row| row.get(0),
+        )
+        .context("failed to insert ledger event")?;
+    Ok(id)
 }
 
 /// Count rows in `ledger_events`. Cheap helper for tests and debugging.
 pub fn count_events() -> Result<i64> {
     let conn = open()?;
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM ledger_events", [], |row| row.get(0))
-        .context("failed to count ledger events")?;
-    Ok(count)
+    count_with_conn(&conn)
+}
+
+fn count_with_conn(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM ledger_events", [], |row| row.get(0))
+        .context("failed to count ledger events")
 }
 
 /// Summary row returned by [`list_recent_runs`] and [`run_summary`].
@@ -412,46 +549,46 @@ pub fn list_recent_runs(
     model_filter: Option<&str>,
 ) -> Result<Vec<RunSummary>> {
     let conn = open()?;
-    let mut sql = String::from(
-        "SELECT run_id, MAX(ts) AS latest_ts FROM ledger_events \
-         WHERE run_id IS NOT NULL \
-           AND event_type IN ('run_started', 'run_rejected')",
-    );
-    if kind_filter.is_some() {
-        sql.push_str(" AND json_extract(payload_json, '$.kind') = :kind");
-    }
-    if model_filter.is_some() {
-        // `run_rejected` events never carry a model; this filter
-        // therefore restricts the result set to started runs only.
-        sql.push_str(" AND json_extract(payload_json, '$.model') = :model");
-    }
-    sql.push_str(" GROUP BY run_id ORDER BY latest_ts DESC");
-    let limit_value = limit.map(|n| n as i64);
-    if limit_value.is_some() {
-        sql.push_str(" LIMIT :limit");
-    }
-
-    let mut stmt = conn.prepare(&sql).context("failed to prepare runs query")?;
-    let mut bindings: Vec<(&str, &dyn rusqlite::ToSql)> = Vec::new();
-    if let Some(value) = kind_filter.as_ref() {
-        bindings.push((":kind", value as &dyn rusqlite::ToSql));
-    }
-    if let Some(value) = model_filter.as_ref() {
-        bindings.push((":model", value as &dyn rusqlite::ToSql));
-    }
-    if let Some(value) = limit_value.as_ref() {
-        bindings.push((":limit", value as &dyn rusqlite::ToSql));
-    }
+    // Fetch candidate run ids newest-first, then apply kind/model filters
+    // in Rust against the assembled summary. The ledger is small (hundreds
+    // of rows), so this is cheaper than threading dynamic JSON predicates
+    // through DuckDB's parameter binding.
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, MAX(ts) AS latest_ts FROM ledger_events \
+             WHERE run_id IS NOT NULL \
+               AND event_type IN ('run_started', 'run_rejected') \
+             GROUP BY run_id ORDER BY latest_ts DESC",
+        )
+        .context("failed to prepare runs query")?;
     let run_ids: Vec<String> = stmt
-        .query_map(bindings.as_slice(), |row| row.get::<_, String>(0))
+        .query_map([], |row| row.get::<_, String>(0))
         .context("failed to query runs")?
-        .collect::<rusqlite::Result<Vec<_>>>()
+        .collect::<duckdb::Result<Vec<_>>>()
         .context("failed to read runs result set")?;
 
-    let mut summaries = Vec::with_capacity(run_ids.len());
+    let mut summaries = Vec::new();
     for run_id in run_ids {
-        if let Some(summary) = run_summary_with_conn(&conn, &run_id)? {
-            summaries.push(summary);
+        let Some(summary) = run_summary_with_conn(&conn, &run_id)? else {
+            continue;
+        };
+        if let Some(kind) = kind_filter {
+            if summary.kind != kind {
+                continue;
+            }
+        }
+        if let Some(model) = model_filter {
+            // `run_rejected` events never carry a model, so a model filter
+            // excludes rejections by construction.
+            if summary.model.as_deref() != Some(model) {
+                continue;
+            }
+        }
+        summaries.push(summary);
+        if let Some(max) = limit {
+            if summaries.len() >= max {
+                break;
+            }
         }
     }
     Ok(summaries)
@@ -548,20 +685,24 @@ fn latest_payload(
     run_id: &str,
     event_type: EventType,
 ) -> Result<Option<(String, DateTime<Utc>)>> {
-    let row = conn
-        .query_row(
+    let mut stmt = conn
+        .prepare(
             "SELECT payload_json, ts FROM ledger_events \
-             WHERE run_id = ?1 AND event_type = ?2 \
+             WHERE run_id = ? AND event_type = ? \
              ORDER BY id DESC LIMIT 1",
-            params![run_id, event_type.as_str()],
-            |row| {
-                let payload: String = row.get(0)?;
-                let ts: String = row.get(1)?;
-                Ok((payload, ts))
-            },
         )
-        .optional()
+        .with_context(|| format!("failed to prepare {} query", event_type.as_str()))?;
+    let mut rows = stmt
+        .query_map(params![run_id, event_type.as_str()], |row| {
+            let payload: String = row.get(0)?;
+            let ts: String = row.get(1)?;
+            Ok((payload, ts))
+        })
         .with_context(|| format!("failed to query {} for {run_id}", event_type.as_str()))?;
+    let row = rows
+        .next()
+        .transpose()
+        .context("failed to read event row")?;
     Ok(row.and_then(|(payload, ts)| {
         DateTime::parse_from_rfc3339(&ts)
             .ok()
@@ -576,16 +717,20 @@ fn latest_payload(
 /// events emitted on error still carry the resolved model.
 pub fn model_for_run(run_id: &str) -> Result<Option<String>> {
     let conn = open()?;
-    let row: Option<String> = conn
-        .query_row(
+    let mut stmt = conn
+        .prepare(
             "SELECT payload_json FROM ledger_events \
-             WHERE run_id = ?1 AND event_type = 'run_started' \
+             WHERE run_id = ? AND event_type = 'run_started' \
              ORDER BY id DESC LIMIT 1",
-            params![run_id],
-            |row| row.get(0),
         )
-        .optional()
+        .context("failed to prepare run_started model lookup")?;
+    let mut rows = stmt
+        .query_map(params![run_id], |row| row.get::<_, String>(0))
         .context("failed to query run_started for model lookup")?;
+    let row: Option<String> = rows
+        .next()
+        .transpose()
+        .context("failed to read run_started row")?;
     Ok(row.and_then(|payload| {
         serde_json::from_str::<serde_json::Value>(&payload)
             .ok()
@@ -596,19 +741,23 @@ pub fn model_for_run(run_id: &str) -> Result<Option<String>> {
 /// Fetch the most recent event of any type for a given `run_id`, if any.
 pub fn latest_event_for_run(run_id: &str) -> Result<Option<(EventType, String)>> {
     let conn = open()?;
-    let row = conn
-        .query_row(
+    let mut stmt = conn
+        .prepare(
             "SELECT event_type, payload_json FROM ledger_events \
-             WHERE run_id = ?1 ORDER BY id DESC LIMIT 1",
-            params![run_id],
-            |row| {
-                let event_type: String = row.get(0)?;
-                let payload: String = row.get(1)?;
-                Ok((event_type, payload))
-            },
+             WHERE run_id = ? ORDER BY id DESC LIMIT 1",
         )
-        .optional()
+        .context("failed to prepare latest event query")?;
+    let mut rows = stmt
+        .query_map(params![run_id], |row| {
+            let event_type: String = row.get(0)?;
+            let payload: String = row.get(1)?;
+            Ok((event_type, payload))
+        })
         .context("failed to query latest event")?;
+    let row = rows
+        .next()
+        .transpose()
+        .context("failed to read latest event row")?;
 
     Ok(row.map(|(type_str, payload)| {
         let event_type = match type_str.as_str() {
@@ -640,10 +789,7 @@ mod tests {
         let (_temp, _home) = fresh_home("ledger-fresh");
 
         let conn = open().unwrap();
-        let version: u32 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(schema_version(&conn).unwrap(), 1);
 
         // Views must exist.
         for view in [
@@ -653,7 +799,7 @@ mod tests {
         ] {
             let exists: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='view' AND name=?1",
+                    "SELECT COUNT(*) FROM duckdb_views() WHERE view_name = ?",
                     params![view],
                     |row| row.get(0),
                 )
@@ -785,10 +931,7 @@ mod tests {
         let _conn = open().unwrap();
 
         let conn = open().unwrap();
-        let version: u32 = conn
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(schema_version(&conn).unwrap(), 1);
     }
 
     #[test]
@@ -833,16 +976,21 @@ mod tests {
     }
 
     #[test]
-    fn future_user_version_is_rejected() {
+    fn future_schema_version_is_rejected() {
         let _lock = env_lock();
-        let (temp, _home) = fresh_home("ledger-future");
+        let (_temp, _home) = fresh_home("ledger-future");
 
-        std::fs::create_dir_all(temp.path().join(".rebotica")).unwrap();
-        let conn = Connection::open(temp.path().join(".rebotica/ledger.db")).unwrap();
-        conn.pragma_update(None, "user_version", 99u32).unwrap();
-        drop(conn);
+        // Open once to create the DuckDB ledger at v1, then bump the
+        // recorded schema_version past what this build supports.
+        {
+            let conn = open().unwrap();
+            set_schema_version(&conn, 99).unwrap();
+        }
 
-        let err = open().expect_err("future user_version should be rejected");
-        assert!(err.to_string().contains("user_version is 99"));
+        let err = open().expect_err("future schema_version should be rejected");
+        assert!(
+            err.to_string().contains("schema_version is 99"),
+            "got: {err}"
+        );
     }
 }

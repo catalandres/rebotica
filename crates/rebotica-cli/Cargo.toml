@@ -26,4 +26,4 @@ serde_yaml.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-rusqlite.workspace = true
+duckdb.workspace = true
