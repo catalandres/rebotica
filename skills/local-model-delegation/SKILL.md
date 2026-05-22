@@ -11,6 +11,7 @@ You have access to a local-model apprentice via the Rebotica MCP server. Use it 
 - **Proposing missing tests for files** → call `mcp__rebotica__propose_tests` first.
 - **Explaining unfamiliar files** → call `mcp__rebotica__explain_files` first.
 - **Diagnosing why delegated calls are failing** → call `mcp__rebotica__health_check`.
+- **Rebotica itself fell short** (bad apprentice output, confusing result, missing capability) → call `mcp__rebotica__submit_feedback` instead of silently working around it.
 
 The apprentice is *advisory*. You retain full judgment: incorporate, override, or reject its findings. The point is to delegate the obvious so you spend cycles on the calls that need you.
 
@@ -22,6 +23,7 @@ The apprentice is *advisory*. You retain full judgment: incorporate, override, o
 | "What tests am I missing?" / "test this file"           | `mcp__rebotica__propose_tests`        | `proposed_tests[]` with name, scenario, kind                                 |
 | "Explain this file" / "what does this do?"              | `mcp__rebotica__explain_files`        | `analysis` (string) covering responsibilities, deps, risks                   |
 | "Is the local model working?" / "why is rbtc failing?"  | `mcp__rebotica__health_check`         | `{ provider, base_url, ok, model_count, models }`                            |
+| Rebotica produced wrong output / is confusing / lacks X | `mcp__rebotica__submit_feedback`      | `{ card_id, status }`; pass `run_id` when it's about a specific run          |
 
 For `review_diff`, the `source` parameter selects the diff:
 - `"working-tree"` (default) — unstaged changes vs HEAD
@@ -82,10 +84,10 @@ claude mcp add --scope project rebotica rbtc -- mcp serve
 
 That writes the entry to `.mcp.json` at the project root. To edit by hand instead, see [claude-settings-snippet.json](claude-settings-snippet.json) for the exact JSON.
 
-Restart any existing Claude Code session in the project for the registration to take effect. Verify with `/mcp` — `rebotica` should appear with the four tools.
+Restart any existing Claude Code session in the project for the registration to take effect. Verify with `/mcp` — `rebotica` should appear with the five tools.
 
 For Codex, MCP discovery is native once `rbtc mcp serve` is invokable; no equivalent file to edit.
 
 ## Codex parity
 
-This skill works identically under Codex when installed via `rbtc install codex` to `.agents/skills/local-model-delegation/`. Codex's MCP support is native: no settings.json equivalent is needed. The same four `mcp__rebotica__*` tool names should appear automatically.
+This skill works identically under Codex when installed via `rbtc install codex` to `.agents/skills/local-model-delegation/`. Codex's MCP support is native: no settings.json equivalent is needed. The same five `mcp__rebotica__*` tool names should appear automatically.

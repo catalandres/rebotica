@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+pub mod feedback;
 pub mod ledger;
 #[cfg(test)]
 mod tests_support;
