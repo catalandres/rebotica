@@ -1428,12 +1428,17 @@ async fn doctor(
         ".github",
         "GitHub assets installed",
     ));
-    let settings = read_settings().unwrap_or_default();
-    if settings.comment_cards.github_submit_consent {
+    let consent = rebotica_runlog::feedback::submission_consent().unwrap_or(
+        rebotica_runlog::feedback::SubmissionConsent {
+            allowed: false,
+            default_repo: String::new(),
+        },
+    );
+    if consent.allowed {
         checks.push(Check::ok(
             "comment_cards.consent",
             "Comment-card GitHub submission consent",
-            settings.comment_cards.default_repo,
+            consent.default_repo,
         ));
     } else {
         checks.push(Check::warn(
@@ -1442,7 +1447,7 @@ async fn doctor(
             "not enabled; run rbtc comment-card consent --allow-github when ready",
         ));
     }
-    let pending_cards = pending_comment_card_count().unwrap_or(0);
+    let pending_cards = rebotica_runlog::feedback::pending_count().unwrap_or(0);
     if pending_cards == 0 {
         checks.push(Check::ok(
             "comment_cards.pending",
@@ -2395,33 +2400,6 @@ fn guard_diff_source(args: &GuardDiffArgs) -> Result<rebotica_git::DiffSource> {
     selected_diff_source(&args.base, &args.range, args.cached)
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-struct ReboticaSettings {
-    #[serde(default)]
-    comment_cards: CommentCardSettings,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct CommentCardSettings {
-    #[serde(default)]
-    github_submit_consent: bool,
-    #[serde(default = "default_comment_card_repo")]
-    default_repo: String,
-}
-
-impl Default for CommentCardSettings {
-    fn default() -> Self {
-        Self {
-            github_submit_consent: false,
-            default_repo: default_comment_card_repo(),
-        }
-    }
-}
-
-fn default_comment_card_repo() -> String {
-    "catalandres/rebotica".to_string()
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct ScoreEvent {
     event_id: String,
@@ -3171,54 +3149,9 @@ fn rebuild_model_scorecards() -> Result<()> {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct CommentCardNewData {
-    card_id: String,
-    status: String,
-    path: String,
-    title: String,
-    kind: String,
-    area: String,
-    source: String,
-    run_id: Option<String>,
-    labels: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
 struct CommentCardListData {
     status_filter: String,
-    cards: Vec<CommentCardListItemData>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CommentCardListItemData {
-    status: String,
-    card_id: String,
-    title: String,
-    path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CommentCardShowData {
-    card_id: String,
-    status: String,
-    path: String,
-    text: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CommentCardMoveData {
-    card_id: String,
-    from: String,
-    to: String,
-    source_path: String,
-    target_path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CommentCardConsentData {
-    github_submit_consent: bool,
-    default_repo: String,
-    settings_path: String,
+    cards: Vec<rebotica_runlog::feedback::CardListItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3226,7 +3159,7 @@ struct CommentCardSubmitData {
     card_id: String,
     repo: String,
     issue_output: String,
-    move_result: CommentCardMoveData,
+    move_result: rebotica_runlog::feedback::CardMove,
 }
 
 fn comment_card(
@@ -3234,10 +3167,19 @@ fn comment_card(
     reporter_mode: ReporterMode,
     started_at: DateTime<Utc>,
 ) -> Result<i32> {
+    use rebotica_runlog::feedback;
     let mut reporter = Reporter::from_mode(reporter_mode);
     match args.command {
         CommentCardCommand::New(args) => {
-            let data = create_comment_card(args)?;
+            let data = feedback::create_card(
+                &args.kind,
+                &args.area,
+                &args.source,
+                &args.title,
+                args.body.as_deref(),
+                args.from_run.as_deref(),
+                &args.labels,
+            )?;
             if reporter.is_json() {
                 emit_success(
                     &mut reporter,
@@ -3252,7 +3194,10 @@ fn comment_card(
             Ok(0)
         }
         CommentCardCommand::List(args) => {
-            let data = list_comment_cards(&args.status)?;
+            let data = CommentCardListData {
+                status_filter: args.status.clone(),
+                cards: feedback::list_cards(&args.status)?,
+            };
             if reporter.is_json() {
                 emit_success(
                     &mut reporter,
@@ -3263,16 +3208,18 @@ fn comment_card(
                 )?;
             } else {
                 for card in &data.cards {
-                    reporter.human(&format!(
-                        "{}\t{}\t{}",
-                        card.status, card.card_id, card.title
-                    ))?;
+                    reporter.human(&format!("{}\t{}\t{}", card.status, card.card_id, card.title))?;
                 }
             }
             Ok(0)
         }
         CommentCardCommand::Show(args) => {
-            let data = show_comment_card(&args.card_id)?;
+            let data = feedback::read_card(&args.card_id)?.ok_or_else(|| {
+                coded_error(
+                    ErrorCode::Usage,
+                    format!("comment card not found: {}", args.card_id),
+                )
+            })?;
             if reporter.is_json() {
                 emit_success(
                     &mut reporter,
@@ -3287,7 +3234,13 @@ fn comment_card(
             Ok(0)
         }
         CommentCardCommand::Dismiss(args) => {
-            let data = move_comment_card(&args.card_id, "pending", "dismissed")?;
+            if !feedback::pending_exists(&args.card_id) {
+                return Err(coded_error(
+                    ErrorCode::Usage,
+                    format!("comment card not found in pending: {}", args.card_id),
+                ));
+            }
+            let data = feedback::dismiss_card(&args.card_id)?;
             if reporter.is_json() {
                 emit_success(
                     &mut reporter,
@@ -3297,15 +3250,12 @@ fn comment_card(
                     &data,
                 )?;
             } else {
-                reporter.human(&format!(
-                    "moved comment card {} to {}",
-                    data.card_id, data.to
-                ))?;
+                reporter.human(&format!("moved comment card {} to {}", data.card_id, data.to))?;
             }
             Ok(0)
         }
         CommentCardCommand::Consent(args) => {
-            let data = configure_comment_card_consent(args)?;
+            let data = feedback::configure_consent(args.allow_github, args.revoke_github, args.repo)?;
             if reporter.is_json() {
                 emit_success(
                     &mut reporter,
@@ -3324,7 +3274,25 @@ fn comment_card(
             Ok(0)
         }
         CommentCardCommand::Submit(args) => {
-            let data = submit_comment_card(args)?;
+            if !feedback::submission_consent()?.allowed {
+                return Err(coded_error(
+                    ErrorCode::Config,
+                    "GitHub comment-card submission needs consent. Run: rbtc comment-card consent --allow-github",
+                ));
+            }
+            if !feedback::pending_exists(&args.card_id) {
+                return Err(coded_error(
+                    ErrorCode::Usage,
+                    format!("pending comment card not found: {}", args.card_id),
+                ));
+            }
+            let submitted = feedback::submit_card(&args.card_id, args.repo)?;
+            let data = CommentCardSubmitData {
+                card_id: submitted.card_id,
+                repo: submitted.repo,
+                issue_output: submitted.issue_output,
+                move_result: submitted.r#move,
+            };
             if reporter.is_json() {
                 emit_success(
                     &mut reporter,
@@ -3348,362 +3316,6 @@ fn comment_card(
     }
 }
 
-fn create_comment_card(args: CommentCardNewArgs) -> Result<CommentCardNewData> {
-    let id = rebotica_runlog::make_id();
-    let labels = comment_card_labels(&args.kind, &args.area, &args.source, &args.labels);
-    let body = args.body.unwrap_or_else(|| {
-        "Describe what happened, what you expected, and any workaround.".to_string()
-    });
-    let text = render_comment_card(
-        &id,
-        "pending",
-        &args.title,
-        &args.kind,
-        &args.area,
-        &args.source,
-        args.from_run.as_deref(),
-        &labels,
-        &body,
-    );
-    let dir = comment_card_status_dir("pending");
-    fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{id}.md"));
-    fs::write(&path, text)?;
-    Ok(CommentCardNewData {
-        card_id: id,
-        status: "pending".to_string(),
-        path: path.display().to_string(),
-        title: args.title,
-        kind: args.kind,
-        area: args.area,
-        source: args.source,
-        run_id: args.from_run,
-        labels,
-    })
-}
-
-fn comment_card_labels(kind: &str, area: &str, source: &str, extra: &[String]) -> Vec<String> {
-    let mut labels = vec![
-        "comment-card".to_string(),
-        format!("kind:{kind}"),
-        format!("area:{area}"),
-        format!("source:{source}"),
-    ];
-    labels.extend(extra.iter().cloned());
-    labels
-}
-
-fn render_comment_card(
-    id: &str,
-    status: &str,
-    title: &str,
-    kind: &str,
-    area: &str,
-    source: &str,
-    run_id: Option<&str>,
-    labels: &[String],
-    body: &str,
-) -> String {
-    let labels_yaml = labels
-        .iter()
-        .map(|label| format!("  - {}", yaml_quote(label)))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "---\nid: {}\nstatus: {}\ntitle: {}\nkind: {}\narea: {}\nsource: {}\nrun_id: {}\nlabels:\n{}\n---\n\n# {}\n\n{}\n",
-        yaml_quote(id),
-        yaml_quote(status),
-        yaml_quote(title),
-        yaml_quote(kind),
-        yaml_quote(area),
-        yaml_quote(source),
-        run_id
-            .map(yaml_quote)
-            .unwrap_or_else(|| "null".to_string()),
-        labels_yaml,
-        title,
-        body
-    )
-}
-
-fn yaml_quote(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
-}
-
-fn list_comment_cards(status: &str) -> Result<CommentCardListData> {
-    let statuses = if status == "all" {
-        vec!["pending", "submitted", "dismissed"]
-    } else {
-        vec![status]
-    };
-    let mut cards = Vec::new();
-    for status in statuses {
-        let dir = comment_card_status_dir(status);
-        if !dir.exists() {
-            continue;
-        }
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-                continue;
-            }
-            let id = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let title = comment_card_field(&path, "title")?.unwrap_or_default();
-            cards.push(CommentCardListItemData {
-                status: status.to_string(),
-                card_id: id,
-                title,
-                path: path.display().to_string(),
-            });
-        }
-    }
-    Ok(CommentCardListData {
-        status_filter: status.to_string(),
-        cards,
-    })
-}
-
-fn show_comment_card(card_id: &str) -> Result<CommentCardShowData> {
-    let path = find_comment_card(card_id)?;
-    let status = path
-        .parent()
-        .and_then(Path::file_name)
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_default();
-    Ok(CommentCardShowData {
-        card_id: card_id.to_string(),
-        status,
-        text: fs::read_to_string(&path)?,
-        path: path.display().to_string(),
-    })
-}
-
-fn move_comment_card(card_id: &str, from: &str, to: &str) -> Result<CommentCardMoveData> {
-    let source = comment_card_status_dir(from).join(format!("{card_id}.md"));
-    if !source.exists() {
-        return Err(coded_error(
-            ErrorCode::Usage,
-            format!("comment card not found in {from}: {card_id}"),
-        ));
-    }
-    let target_dir = comment_card_status_dir(to);
-    fs::create_dir_all(&target_dir)?;
-    let target = target_dir.join(format!("{card_id}.md"));
-    fs::rename(&source, &target)?;
-    Ok(CommentCardMoveData {
-        card_id: card_id.to_string(),
-        from: from.to_string(),
-        to: to.to_string(),
-        source_path: source.display().to_string(),
-        target_path: target.display().to_string(),
-    })
-}
-
-fn configure_comment_card_consent(args: CommentCardConsentArgs) -> Result<CommentCardConsentData> {
-    let mut settings = read_settings()?;
-    if args.allow_github {
-        settings.comment_cards.github_submit_consent = true;
-    }
-    if args.revoke_github {
-        settings.comment_cards.github_submit_consent = false;
-    }
-    if let Some(repo) = args.repo {
-        settings.comment_cards.default_repo = repo;
-    }
-    write_settings(&settings)?;
-    Ok(CommentCardConsentData {
-        github_submit_consent: settings.comment_cards.github_submit_consent,
-        default_repo: settings.comment_cards.default_repo,
-        settings_path: settings_path().display().to_string(),
-    })
-}
-
-fn submit_comment_card(args: CommentCardSubmitArgs) -> Result<CommentCardSubmitData> {
-    let settings = read_settings()?;
-    if !settings.comment_cards.github_submit_consent {
-        return Err(coded_error(
-            ErrorCode::Config,
-            "GitHub comment-card submission needs consent. Run: rbtc comment-card consent --allow-github",
-        ));
-    }
-    let repo = args
-        .repo
-        .unwrap_or_else(|| settings.comment_cards.default_repo.clone());
-    let path = comment_card_status_dir("pending").join(format!("{}.md", args.card_id));
-    if !path.exists() {
-        return Err(coded_error(
-            ErrorCode::Usage,
-            format!("pending comment card not found: {}", args.card_id),
-        ));
-    }
-    let title = comment_card_field(&path, "title")?
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| format!("Comment card {}", args.card_id));
-    let labels = comment_card_labels_from_file(&path)?;
-    ensure_github_labels(&repo, &labels);
-    let mut command = ProcessCommand::new("gh");
-    command
-        .args([
-            "issue",
-            "create",
-            "--repo",
-            &repo,
-            "--title",
-            &title,
-            "--body-file",
-        ])
-        .arg(&path);
-    for label in &labels {
-        command.args(["--label", label]);
-    }
-    let output = command
-        .output()
-        .with_context(|| "failed to run gh issue create")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(anyhow!(
-            "{}",
-            if stderr.is_empty() {
-                "gh issue create failed".to_string()
-            } else {
-                stderr
-            }
-        ));
-    }
-    let move_result = move_comment_card(&args.card_id, "pending", "submitted")?;
-    Ok(CommentCardSubmitData {
-        card_id: args.card_id,
-        repo,
-        issue_output: String::from_utf8_lossy(&output.stdout).to_string(),
-        move_result,
-    })
-}
-
-fn ensure_github_labels(repo: &str, labels: &[String]) {
-    for label in labels {
-        let _ = ProcessCommand::new("gh")
-            .args([
-                "label",
-                "create",
-                label,
-                "--repo",
-                repo,
-                "--color",
-                comment_card_label_color(label),
-                "--description",
-                "Rebotica comment card label",
-                "--force",
-            ])
-            .output();
-    }
-}
-
-fn comment_card_label_color(label: &str) -> &'static str {
-    if label == "comment-card" {
-        "5319e7"
-    } else if label.starts_with("kind:") {
-        "e99695"
-    } else if label.starts_with("area:") {
-        "c2e0c6"
-    } else if label.starts_with("source:") {
-        "d4c5f9"
-    } else {
-        "cfd3d7"
-    }
-}
-
-fn read_settings() -> Result<ReboticaSettings> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(ReboticaSettings::default());
-    }
-    let text =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    serde_yaml::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
-}
-
-fn write_settings(settings: &ReboticaSettings) -> Result<()> {
-    fs::create_dir_all(rebotica_runlog::root())?;
-    fs::write(settings_path(), serde_yaml::to_string(settings)?)?;
-    Ok(())
-}
-
-fn settings_path() -> PathBuf {
-    rebotica_runlog::root().join("settings.yml")
-}
-
-fn comment_cards_root() -> PathBuf {
-    rebotica_runlog::root().join("comment-cards")
-}
-
-fn comment_card_status_dir(status: &str) -> PathBuf {
-    comment_cards_root().join(status)
-}
-
-fn find_comment_card(card_id: &str) -> Result<PathBuf> {
-    for status in ["pending", "submitted", "dismissed"] {
-        let path = comment_card_status_dir(status).join(format!("{card_id}.md"));
-        if path.exists() {
-            return Ok(path);
-        }
-    }
-    Err(coded_error(
-        ErrorCode::Usage,
-        format!("comment card not found: {card_id}"),
-    ))
-}
-
-fn pending_comment_card_count() -> Result<usize> {
-    let dir = comment_card_status_dir("pending");
-    if !dir.exists() {
-        return Ok(0);
-    }
-    Ok(fs::read_dir(dir)?
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|extension| extension.to_str())
-                == Some("md")
-        })
-        .count())
-}
-
-fn comment_card_field(path: &Path, field: &str) -> Result<Option<String>> {
-    let text = fs::read_to_string(path)?;
-    let prefix = format!("{field}:");
-    Ok(text
-        .lines()
-        .find_map(|line| line.strip_prefix(&prefix).map(str::trim))
-        .map(|value| value.trim_matches('"').to_string()))
-}
-
-fn comment_card_labels_from_file(path: &Path) -> Result<Vec<String>> {
-    let text = fs::read_to_string(path)?;
-    let mut labels = Vec::new();
-    let mut in_labels = false;
-    for line in text.lines() {
-        if line.trim() == "labels:" {
-            in_labels = true;
-            continue;
-        }
-        if in_labels {
-            if let Some(label) = line.trim().strip_prefix("- ") {
-                labels.push(label.trim_matches('"').to_string());
-                continue;
-            }
-            if !line.starts_with(' ') {
-                break;
-            }
-        }
-    }
-    Ok(labels)
-}
 
 #[derive(Debug, Clone, Serialize)]
 struct RetroData {
@@ -5259,61 +4871,6 @@ mod tests {
             scorecard.disposition,
             rebotica_runlog::Disposition::EditThenUse
         );
-    }
-
-    #[test]
-    fn comment_cards_are_created_and_dismissed_locally() {
-        let _lock = env_lock();
-        let temp = TempDir::new("comment-card");
-        let _home = EnvGuard::set("HOME", temp.path());
-
-        create_comment_card(CommentCardNewArgs {
-            from_run: Some("run-1".to_string()),
-            kind: "ux".to_string(),
-            area: "review".to_string(),
-            source: "prime".to_string(),
-            title: "Review needs clearer next steps".to_string(),
-            body: Some("The Prime needed a stronger nudge.".to_string()),
-            labels: vec!["area:review".to_string()],
-        })
-        .unwrap();
-
-        assert_eq!(pending_comment_card_count().unwrap(), 1);
-        let pending = comment_card_status_dir("pending");
-        let card_path = fs::read_dir(&pending)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let card_id = card_path.file_stem().unwrap().to_string_lossy().to_string();
-        let text = fs::read_to_string(&card_path).unwrap();
-        assert!(text.contains("Review needs clearer next steps"));
-        assert!(text.contains("source: \"prime\""));
-
-        move_comment_card(&card_id, "pending", "dismissed").unwrap();
-        assert_eq!(pending_comment_card_count().unwrap(), 0);
-        assert!(comment_card_status_dir("dismissed")
-            .join(format!("{card_id}.md"))
-            .exists());
-    }
-
-    #[test]
-    fn comment_card_consent_writes_settings() {
-        let _lock = env_lock();
-        let temp = TempDir::new("comment-card-consent");
-        let _home = EnvGuard::set("HOME", temp.path());
-
-        configure_comment_card_consent(CommentCardConsentArgs {
-            allow_github: true,
-            revoke_github: false,
-            repo: Some("catalandres/rebotica".to_string()),
-        })
-        .unwrap();
-
-        let settings = read_settings().unwrap();
-        assert!(settings.comment_cards.github_submit_consent);
-        assert_eq!(settings.comment_cards.default_repo, "catalandres/rebotica");
     }
 
     #[test]

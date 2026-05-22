@@ -61,6 +61,38 @@ pub struct FileTargetsRequest {
     pub model: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SubmitFeedbackRequest {
+    /// One-line feedback title (required).
+    pub title: String,
+    /// Detailed body: what happened, what was expected, any workaround.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Feedback kind: `bug`, `ux`, `docs`, `prompt`, or `roadmap`.
+    #[serde(default = "default_feedback_kind")]
+    pub kind: String,
+    /// Affected product area, e.g. `review`, `tests`, `mcp`, `ledger`, `docs`.
+    #[serde(default = "default_feedback_area")]
+    pub area: String,
+    /// The Rebotica `run_id` this feedback is about, if any.
+    #[serde(default)]
+    pub run_id: Option<String>,
+    /// Extra GitHub labels beyond the auto-applied comment-card set.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Override the configured GitHub repo for this submission.
+    #[serde(default)]
+    pub repo: Option<String>,
+}
+
+fn default_feedback_kind() -> String {
+    "ux".to_string()
+}
+
+fn default_feedback_area() -> String {
+    "general".to_string()
+}
+
 #[derive(Clone)]
 pub struct ApprenticeServer {
     cwd: PathBuf,
@@ -248,6 +280,74 @@ impl ApprenticeServer {
             body.to_string(),
         )]))
     }
+
+    #[tool(
+        description = "File product feedback about Rebotica itself — an apprentice that produced wrong/low-value output, a confusing tool result, a missing capability, a docs gap. Writes a structured comment card locally; if the maintainer has enabled GitHub submission (rbtc comment-card consent --allow-github), it also files a labeled GitHub issue. Pass `run_id` when the feedback is about a specific delegated run. Use this instead of silently working around a Rebotica shortcoming, so the harness can improve."
+    )]
+    async fn submit_feedback(
+        &self,
+        Parameters(req): Parameters<SubmitFeedbackRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        use rebotica_runlog::feedback;
+        if req.title.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "`title` must not be empty or whitespace-only",
+                None,
+            ));
+        }
+        // Feedback arriving over MCP is filed by the Prime agent.
+        let card = feedback::create_card(
+            &req.kind,
+            &req.area,
+            "prime",
+            &req.title,
+            req.body.as_deref(),
+            req.run_id.as_deref(),
+            &req.labels,
+        )
+        .map_err(|e| McpError::internal_error(format!("failed to write comment card: {e:#}"), None))?;
+
+        let consent = feedback::submission_consent().map_err(|e| {
+            McpError::internal_error(format!("failed to read consent: {e:#}"), None)
+        })?;
+
+        let body = if consent.allowed {
+            match feedback::submit_card(&card.card_id, req.repo) {
+                Ok(submitted) => serde_json::json!({
+                    "card_id": submitted.card_id,
+                    "status": "submitted",
+                    "repo": submitted.repo,
+                    "issue_output": submitted.issue_output.trim(),
+                    "labels": card.labels,
+                }),
+                // The card is already saved as pending; surface the failure
+                // with the id so it isn't lost and can be retried manually.
+                Err(error) => {
+                    return Err(McpError::internal_error(
+                        format!(
+                            "comment card {} saved as pending, but GitHub submission failed: {error:#}. \
+                             Retry with: rbtc comment-card submit {}",
+                            card.card_id, card.card_id
+                        ),
+                        None,
+                    ));
+                }
+            }
+        } else {
+            serde_json::json!({
+                "card_id": card.card_id,
+                "status": "pending",
+                "submitted": false,
+                "labels": card.labels,
+                "note": "GitHub submission consent is off; the card is saved locally. \
+                         A maintainer can file it with `rbtc comment-card submit <card_id>` \
+                         after `rbtc comment-card consent --allow-github`.",
+            })
+        };
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
+    }
 }
 
 #[tool_handler]
@@ -267,7 +367,10 @@ impl ServerHandler for ApprenticeServer {
                  want the larger review. Use `health_check` to verify the local provider is \
                  reachable. After acting on apprentice output (or deciding not to), call \
                  `rbtc score RUN_ID --disposition <accept|reject|edit_then_use>` to record \
-                 feedback so the apprentice can learn from real use."
+                 feedback so the apprentice can learn from real use. When Rebotica itself falls \
+                 short — a bad apprentice result, a confusing tool response, a missing capability \
+                 — call `submit_feedback` (with the `run_id` when relevant) rather than silently \
+                 working around it, so the harness can improve."
                     .to_string(),
             )
     }
@@ -541,5 +644,73 @@ mod tests {
             err.contains("base:"),
             "error should steer callers to base:REF: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_rejects_empty_title() {
+        let server = build_test_server();
+        let err = server
+            .submit_feedback(Parameters(SubmitFeedbackRequest {
+                title: "   ".to_string(),
+                body: None,
+                kind: default_feedback_kind(),
+                area: default_feedback_area(),
+                run_id: None,
+                labels: vec![],
+                repo: None,
+            }))
+            .await
+            .expect_err("empty title should be rejected");
+        assert!(
+            format!("{err:?}").contains("title"),
+            "error should mention title"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_feedback_stages_card_when_consent_off() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("rebotica-mcp-fb-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let _g = EnvGuard::set("HOME", home.to_str().unwrap());
+
+        let server = build_test_server();
+        let result = server
+            .submit_feedback(Parameters(SubmitFeedbackRequest {
+                title: "review dropped files".to_string(),
+                body: Some("only one file surfaced".to_string()),
+                kind: "bug".to_string(),
+                area: "review".to_string(),
+                run_id: Some("run-9".to_string()),
+                labels: vec![],
+                repo: None,
+            }))
+            .await
+            .expect("staging should succeed with consent off");
+
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        };
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["status"], "pending");
+        assert_eq!(body["submitted"], false);
+        let card_id = body["card_id"].as_str().expect("card_id present");
+        assert!(!card_id.is_empty());
+        // The auto-applied comment-card labels are echoed back in the response.
+        let labels = body["labels"].as_array().expect("labels present");
+        assert!(labels.iter().any(|l| l == "kind:bug"));
+        assert!(labels.iter().any(|l| l == "area:review"));
+        assert!(labels.iter().any(|l| l == "source:prime"));
+        assert!(
+            rebotica_runlog::feedback::pending_exists(card_id),
+            "card should be written under the temp HOME"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
