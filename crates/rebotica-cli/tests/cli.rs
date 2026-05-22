@@ -2186,19 +2186,19 @@ fn compare_with_comma_separated_models_expands_correctly() {
 }
 
 /// Read the most recent `run_completed` payload for `run_id` out of the
-/// ledger db rooted at `home/.rebotica/`. Opens SQLite directly rather
+/// ledger db rooted at `home/.rebotica/`. Opens DuckDB directly rather
 /// than going through the runlog crate's `root()` helper, because that
 /// helper consults `HOME` from the test thread's environment — which
 /// would race with parallel tests.
 fn read_run_completed_payload(home: &Path, run_id: &str) -> Value {
-    let ledger_path = home.join(".rebotica/ledger.db");
-    let conn = rusqlite::Connection::open(&ledger_path).expect("open ledger db");
+    let ledger_path = home.join(".rebotica/ledger.duckdb");
+    let conn = duckdb::Connection::open(&ledger_path).expect("open ledger db");
     let payload_json: String = conn
         .query_row(
             "SELECT payload_json FROM ledger_events \
-             WHERE run_id = ?1 AND event_type = 'run_completed' \
+             WHERE run_id = ? AND event_type = 'run_completed' \
              ORDER BY id DESC LIMIT 1",
-            rusqlite::params![run_id],
+            duckdb::params![run_id],
             |row| row.get(0),
         )
         .expect("run_completed row should exist for run_id");

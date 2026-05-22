@@ -171,23 +171,24 @@ The `--disposition` flag takes precedence over the legacy `--accepted` / `--reje
 
 ## Apprentice Ledger
 
-`~/.rebotica/ledger.db` is a SQLite database that records the v0.3+ event log driving routing, retrospectives, and (eventually) the federated benchmark. It is created and migrated on first event write; consumers can also open it read-only with `sqlite3`.
+`~/.rebotica/ledger.duckdb` is a [DuckDB](https://duckdb.org) database that records the v0.3+ event log driving routing, retrospectives, and (eventually) the federated benchmark. It is created and migrated on first event write; consumers can open it read-only with the `duckdb` CLI. A ledger created before the v0.3 DuckDB switch (`~/.rebotica/ledger.db`, SQLite) is migrated forward automatically on first open via DuckDB's `sqlite` extension, and the original is preserved as `ledger.db.sqlite-backup`.
 
 ### Schema
 
-Single append-only table:
+Single append-only table, with ids from a sequence:
 
 ```sql
+CREATE SEQUENCE ledger_events_id_seq START 1;
 CREATE TABLE ledger_events (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts           TEXT    NOT NULL,           -- RFC 3339 UTC
-    run_id       TEXT,                       -- nullable; null for non-run events
-    event_type   TEXT    NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded | run_rejected
-    payload_json TEXT    NOT NULL            -- typed payload, shape per event_type
+    id           BIGINT  PRIMARY KEY DEFAULT nextval('ledger_events_id_seq'),
+    ts           VARCHAR NOT NULL,           -- RFC 3339 UTC
+    run_id       VARCHAR,                    -- nullable; null for non-run events
+    event_type   VARCHAR NOT NULL,           -- run_started | run_completed | prime_disposition | score_recorded | run_rejected
+    payload_json VARCHAR NOT NULL            -- typed payload, shape per event_type
 );
 ```
 
-`PRAGMA user_version` is `1` for the v0.3 baseline. Future schema bumps land additive migrations and increment this number. Schema changes never alter existing rows.
+The schema version lives in a `ledger_meta(key, value)` row (`key = 'schema_version'`), `1` for the v0.3 baseline. Future schema bumps land additive migrations and increment this number. Schema changes never alter existing rows. (Concurrency note: DuckDB takes an exclusive lock per read-write connection, so rbtc opens the ledger in short write-then-close bursts and retries with backoff on transient lock contention.)
 
 ### MCP-initiated runs
 
